@@ -5,6 +5,8 @@ Modelos de domínio para Lotes, Terrenos, Dimensões Geométricas e Estudo de Vi
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from domain.legislacao_sp import extrair_pa, taxa_permeabilidade
+
 
 @dataclass
 class SegmentoAresta:
@@ -60,6 +62,12 @@ class ParametrosZoneamento:
     recuo_lateral_fundo_m: str
     descricao_uso: str
     legislacao_ref: str = "Lei 16.402/2016 e Revisão Lei 18.081/2024"
+    taxa_ocupacao_lote_menor_500: Optional[float] = None  # Quadro 3: lotes abaixo de 500 m²
+
+    def taxa_ocupacao_para_area(self, area_m2: float) -> float:
+        if area_m2 < 500 and self.taxa_ocupacao_lote_menor_500 is not None:
+            return self.taxa_ocupacao_lote_menor_500
+        return self.taxa_ocupacao_max
 
 
 @dataclass
@@ -126,11 +134,13 @@ class ResultadoTerreno:
     def projecao_maxima_m2(self) -> float:
         if not self.zoneamento:
             return 0.0
-        return round(self.area_total_m2 * self.zoneamento.taxa_ocupacao_max, 2)
+        return round(self.area_total_m2 * self.zoneamento.taxa_ocupacao_para_area(self.area_total_m2), 2)
 
     @property
     def area_permeavel_minima_m2(self) -> float:
         if not self.zoneamento:
             return 0.0
-        return round(self.area_total_m2 * self.zoneamento.taxa_permeabilidade_min, 2)
+        pa = extrair_pa(self.qualificacao_ambiental.valor) if self.qualificacao_ambiental else None
+        taxa = taxa_permeabilidade(self.zoneamento.sigla_zona, pa, self.area_total_m2)
+        return round(self.area_total_m2 * (taxa or 0.0), 2)
 

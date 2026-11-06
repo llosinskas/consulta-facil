@@ -67,6 +67,13 @@ def aplicar_estilos() -> None:
     st.markdown(CSS_GLOBAL, unsafe_allow_html=True)
 
 
+def preservar_campos(prefixo: str) -> None:
+    """O Streamlit apaga campos de páginas que não estão abertas; regravá-los aqui mantém os valores."""
+    for chave in list(st.session_state.keys()):
+        if str(chave).startswith(prefixo):
+            st.session_state[chave] = st.session_state[chave]
+
+
 def _html(conteudo: str) -> None:
     st.markdown(conteudo, unsafe_allow_html=True)
 

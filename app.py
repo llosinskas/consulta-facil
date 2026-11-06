@@ -12,22 +12,40 @@ from streamlit_folium import st_folium
 
 import config
 import domain.models
+import domain.tabelas_dados
+import domain.viabilidade_models
+import services.agua_elevador_engine
+import services.desnivel_engine
+import services.excel_exporter
+import services.financeiro_cronograma_engine
 import services.geocoder
 import services.geosampa_client
+import services.quadro_areas_engine
 import services.spatial_analyzer
+import services.viabilidade_bridge
 import ui.dashboard_cards
 import ui.map_component
 import ui.styles
+import ui.viabilidade_ui
 
 # Garante que módulos atualizados sejam recarregados mesmo com servidor Streamlit já aberto
 importlib.reload(config)
 importlib.reload(domain.models)
+importlib.reload(domain.tabelas_dados)
+importlib.reload(domain.viabilidade_models)
 importlib.reload(services.geocoder)
 importlib.reload(services.geosampa_client)
 importlib.reload(services.spatial_analyzer)
+importlib.reload(services.viabilidade_bridge)
+importlib.reload(services.quadro_areas_engine)
+importlib.reload(services.agua_elevador_engine)
+importlib.reload(services.desnivel_engine)
+importlib.reload(services.excel_exporter)
+importlib.reload(services.financeiro_cronograma_engine)
 importlib.reload(ui.styles)
 importlib.reload(ui.dashboard_cards)
 importlib.reload(ui.map_component)
+importlib.reload(ui.viabilidade_ui)
 
 from services.geocoder import geocodificar_endereco_sp
 from services.geosampa_client import (
@@ -51,6 +69,7 @@ from ui.dashboard_cards import (
 )
 from ui.map_component import construir_mapa_terreno
 from ui.styles import aplicar_estilos, nota, titulo_secao
+from ui.viabilidade_ui import renderizar_estudo_completo_planilha
 
 st.set_page_config(
     page_title="Estudo de Viabilidade · GeoSampa",
@@ -69,6 +88,7 @@ def carregar_exemplo(nome: str) -> None:
     dados = LOTES_EXEMPLO_SP[nome]
     st.session_state["ultimo_erro"] = None
     st.session_state["aviso_selecao_mapa"] = None
+    st.session_state.pop("viab_df_pavimentos", None)
     st.session_state["resultado_terreno"] = processar_terreno_completo(
         features_lotes=dados["features_utm"],
         client=None,
@@ -104,6 +124,7 @@ def salvar_resultado(
     preservar_contexto_atual: bool = False,
 ) -> None:
     st.session_state["ultimo_erro"] = None
+    st.session_state.pop("viab_df_pavimentos", None)
     atual = st.session_state.get("resultado_terreno")
     zona_ini = atual.zoneamento.sigla_zona if (preservar_contexto_atual and atual and atual.zoneamento) else None
     valores_ini = None
@@ -455,6 +476,7 @@ def main() -> None:
 
     renderizar_painel_viabilidade(resultado)
     renderizar_tabela_unitario_vs_unificado(resultado)
+    renderizar_estudo_completo_planilha(resultado)
     renderizar_tabelas_geometricas(resultado)
 
 

@@ -9,13 +9,14 @@ Todos os textos ficam visíveis: cards e tabelas quebram linha, sem abas nem se�
 """
 
 import json
-import math
 
 import pandas as pd
 import streamlit as st
 
+from domain.legislacao_sp import extrair_pa, taxa_permeabilidade
 from domain.models import ResultadoTerreno
 from domain.zoning_rules import ZONING_DATABASE, obter_parametros_zoneamento
+from ui.aproveitamento_ui import renderizar_aproveitamento
 from ui.styles import cabecalho_terreno, grade_cards, nota, tabela, titulo_secao
 
 
@@ -95,11 +96,13 @@ def renderizar_painel_viabilidade(resultado: ResultadoTerreno) -> None:
     """Parâmetros urbanísticos aplicados à área real do terreno, com simulação de zona."""
     titulo_secao(
         "Estudo preliminar de viabilidade",
-        "Índices da LPUOS aplicados à área do terreno. Confira sempre o Quadro 3 da lei vigente.",
+        "Contas de aproveitamento pela LPUOS, PDE e COE. Confira sempre a lei vigente antes de decidir.",
     )
 
     opcoes = list(ZONING_DATABASE.keys())
     atual = resultado.zoneamento.sigla_zona.upper() if resultado.zoneamento else "ZM"
+    if atual not in opcoes:
+        nota(f"A zona detectada ({atual}) não consta do Quadro 3 da LPUOS: a seleção abaixo é só uma simulação.", "alert")
     indice = opcoes.index(atual) if atual in opcoes else opcoes.index("ZM")
 
     col_sel, col_desc = st.columns([1, 2], gap="large")
@@ -117,45 +120,7 @@ def renderizar_painel_viabilidade(resultado: ResultadoTerreno) -> None:
     with col_desc:
         nota(f"{params.sigla_zona} — {params.nome_zona}. {params.descricao_uso} Referência: {params.legislacao_ref}.")
 
-    area = resultado.area_total_m2
-    pot_basico = area * params.ca_basico
-    pot_maximo = area * params.ca_maximo
-    outorga = max(0.0, pot_maximo - pot_basico)
-    projecao = area * params.taxa_ocupacao_max
-    permeavel = area * params.taxa_permeabilidade_min
-    gabarito = f"{params.gabarito_altura_max_m:.0f} m" if params.gabarito_altura_max_m else "Sem limite"
-    pavimentos = (
-        int(params.gabarito_altura_max_m // 3.0)
-        if params.gabarito_altura_max_m
-        else max(1, int(math.ceil(pot_maximo / max(projecao * 0.75, 1.0))))
-    )
-
-    st.write("")
-    grade_cards(
-        [
-            (f"Potencial construtivo básico (CA {params.ca_basico:.1f})", _m2(pot_basico), "Sem outorga onerosa"),
-            (f"Potencial construtivo máximo (CA {params.ca_maximo:.1f})", _m2(pot_maximo), None),
-            ("Área sujeita a outorga onerosa", _m2(outorga), "Máximo − básico"),
-            (f"Projeção máxima (TO {params.taxa_ocupacao_max * 100:.0f}%)", _m2(projecao),
-             f"Área livre: {_m2(area - projecao)}"),
-            (f"Área permeável mínima (TP {params.taxa_permeabilidade_min * 100:.0f}%)", _m2(permeavel), None),
-            ("Gabarito máximo de altura", gabarito, f"Cerca de {pavimentos} pavimentos (estimativa)"),
-        ]
-    )
-
-    titulo_secao("Quadro de índices e recuos")
-    tabela(
-        ["Parâmetro", "Valor", "Aplicado ao terreno"],
-        [
-            ["Coeficiente de aproveitamento mínimo", f"{params.ca_minimo:.2f}", _m2(area * params.ca_minimo)],
-            ["Coeficiente de aproveitamento básico", f"{params.ca_basico:.2f}", _m2(pot_basico)],
-            ["Coeficiente de aproveitamento máximo", f"{params.ca_maximo:.2f}", _m2(pot_maximo)],
-            ["Taxa de ocupação máxima", f"{params.taxa_ocupacao_max * 100:.0f}%", _m2(projecao)],
-            ["Taxa de permeabilidade mínima", f"{params.taxa_permeabilidade_min * 100:.0f}%", _m2(permeavel)],
-            ["Recuo de frente mínimo", _m(params.recuo_frontal_m), "—"],
-            ["Recuos laterais e de fundo", params.recuo_lateral_fundo_m, "—"],
-        ],
-    )
+    renderizar_aproveitamento(resultado, params.sigla_zona)
 
     titulo_secao("Topografia", "Curvas de nível do GeoSampa que cruzam o terreno.")
     topo = resultado.topografia
@@ -180,6 +145,7 @@ def gerar_dataframe_unitario_vs_unificado(resultado: ResultadoTerreno) -> pd.Dat
     zona_padrao = resultado.zoneamento.sigla_zona if resultado.zoneamento else "ZM"
     params_padrao = resultado.zoneamento or obter_parametros_zoneamento(zona_padrao)
     area_total = max(resultado.area_total_m2, 0.01)
+    pa_terreno = extrair_pa(resultado.qualificacao_ambiental.valor) if resultado.qualificacao_ambiental else None
 
     registros = []
     for idx, lote in enumerate(resultado.lotes, start=1):
@@ -187,10 +153,9 @@ def gerar_dataframe_unitario_vs_unificado(resultado: ResultadoTerreno) -> pd.Dat
         p_lote = obter_parametros_zoneamento(sigla_lote) or params_padrao
         ca_b = p_lote.ca_basico if p_lote else 1.0
         ca_m = p_lote.ca_maximo if p_lote else 2.0
-        to_max = p_lote.taxa_ocupacao_max if p_lote else 0.70
-        tp_min = p_lote.taxa_permeabilidade_min if p_lote else 0.15
-
         area_u = round(lote.area_cartografica_m2, 2)
+        to_max = p_lote.taxa_ocupacao_para_area(area_u) if p_lote else 0.70
+        tp_min = (taxa_permeabilidade(p_lote.sigla_zona, pa_terreno, area_u) or 0.0) if p_lote else 0.30
         pot_b = round(area_u * ca_b, 2)
         pot_m = round(area_u * ca_m, 2)
         outorga_u = round(max(0.0, pot_m - pot_b), 2)
@@ -222,10 +187,9 @@ def gerar_dataframe_unitario_vs_unificado(resultado: ResultadoTerreno) -> pd.Dat
 
     ca_b_tot = params_padrao.ca_basico if params_padrao else 1.0
     ca_m_tot = params_padrao.ca_maximo if params_padrao else 2.0
-    to_tot = params_padrao.taxa_ocupacao_max if params_padrao else 0.70
-    tp_tot = params_padrao.taxa_permeabilidade_min if params_padrao else 0.15
-
     area_unif = round(resultado.area_total_m2, 2)
+    to_tot = params_padrao.taxa_ocupacao_para_area(area_unif) if params_padrao else 0.70
+    tp_tot = (taxa_permeabilidade(params_padrao.sigla_zona, pa_terreno, area_unif) or 0.0) if params_padrao else 0.30
     pot_b_unif = round(area_unif * ca_b_tot, 2)
     pot_m_unif = round(area_unif * ca_m_tot, 2)
     outorga_unif = round(max(0.0, pot_m_unif - pot_b_unif), 2)
