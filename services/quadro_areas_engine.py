@@ -95,6 +95,9 @@ def distribuir_areas_automaticas_por_terreno(
     qtd_pav_tipo: int = 9,
     area_media_his2_m2: float = 25.0,
     area_media_r2v1_m2: float = 25.0,
+    incluir_fachada_ativa: Optional[bool] = None,
+    area_fachada_ativa_m2: Optional[float] = None,
+    qtd_lojas_fa: int = 1,
 ) -> List[Pavimento]:
     """
     Pré-preenche o Quadro de Áreas automaticamente a partir do potencial construtivo do terreno
@@ -126,14 +129,23 @@ def distribuir_areas_automaticas_por_terreno(
     uh_his2_pav = max(1, int(round(area_his2_pav / max(area_media_his2_m2, 15.0))))
     uh_r2v1_pav = max(0, int(round(area_r2v1_pav / max(area_media_r2v1_m2, 15.0))))
 
+    usar_fa = (indices.fachada_ativa_pct >= 0.5) if incluir_fachada_ativa is None else bool(incluir_fachada_ativa)
+
     for p in pavs:
         if p.tipo == "terreo":
             total_uh_est = (uh_his2_pav + uh_r2v1_pav) * n_tipo
             p.areas["nc_ecc"] = round(total_uh_est * 0.5, 2)
             p.areas["nc_circ"] = round(indices.area_terreno_m2 * 0.12, 2)
-            if indices.fachada_ativa_pct >= 0.5:
-                p.unidades["u_nr1_3"] = 1
-                p.areas["nc_nr1_3_fa"] = round(indices.area_terreno_m2 * 0.15, 2)
+            if usar_fa:
+                p.unidades["u_nr1_3"] = float(max(1, int(qtd_lojas_fa)))
+                area_fa_padrao = round(indices.area_terreno_m2 * min(0.15, max(0.10, indices.fachada_ativa_pct)), 2)
+                p.areas["nc_nr1_3_fa"] = round(
+                    float(area_fachada_ativa_m2) if area_fachada_ativa_m2 is not None else area_fa_padrao,
+                    2,
+                )
+            else:
+                p.unidades["u_nr1_3"] = 0.0
+                p.areas["nc_nr1_3_fa"] = 0.0
         elif p.tipo == "tipo":
             p.unidades["u_his2"] = float(uh_his2_pav)
             p.unidades["u_r2v1"] = float(uh_r2v1_pav)

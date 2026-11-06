@@ -16,6 +16,7 @@ import domain.tabelas_dados
 import domain.viabilidade_models
 import services.agua_elevador_engine
 import services.desnivel_engine
+import services.eletrica_engine
 import services.excel_exporter
 import services.financeiro_cronograma_engine
 import services.geocoder
@@ -40,6 +41,7 @@ importlib.reload(services.viabilidade_bridge)
 importlib.reload(services.quadro_areas_engine)
 importlib.reload(services.agua_elevador_engine)
 importlib.reload(services.desnivel_engine)
+importlib.reload(services.eletrica_engine)
 importlib.reload(services.excel_exporter)
 importlib.reload(services.financeiro_cronograma_engine)
 importlib.reload(ui.styles)
@@ -89,6 +91,7 @@ def carregar_exemplo(nome: str) -> None:
     st.session_state["ultimo_erro"] = None
     st.session_state["aviso_selecao_mapa"] = None
     st.session_state.pop("viab_df_pavimentos", None)
+    st.session_state.pop("viab_ultima_assinatura_fa", None)
     st.session_state["resultado_terreno"] = processar_terreno_completo(
         features_lotes=dados["features_utm"],
         client=None,
@@ -125,6 +128,7 @@ def salvar_resultado(
 ) -> None:
     st.session_state["ultimo_erro"] = None
     st.session_state.pop("viab_df_pavimentos", None)
+    st.session_state.pop("viab_ultima_assinatura_fa", None)
     atual = st.session_state.get("resultado_terreno")
     zona_ini = atual.zoneamento.sigla_zona if (preservar_contexto_atual and atual and atual.zoneamento) else None
     valores_ini = None

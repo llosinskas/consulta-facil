@@ -35,6 +35,10 @@ from services.agua_elevador_engine import (
     calcular_trafego_elevadores,
 )
 from services.desnivel_engine import calcular_desnivel_reservatorios
+from services.eletrica_engine import (
+    PERFIS_ELETRICOS_APTO,
+    calcular_previa_eletrica,
+)
 from services.excel_exporter import gerar_xlsx_bytes
 from services.financeiro_cronograma_engine import (
     calcular_retorno_financeiro_e_cronograma,
@@ -144,11 +148,12 @@ def _montar_abas_xlsx(
     elevador: Any,
     desnivel: Any,
     fin_cron: Any,
+    eletrica: Any,
     nome_empreendimento: str,
     df_checklist: pd.DataFrame,
     df_mix: pd.DataFrame,
 ) -> List[Tuple[str, Sequence[Sequence[Any]]]]:
-    """Prepara as 9 abas da planilha para exportação em `.xlsx` (7 abas originais + FINANCEIRO + CRONOGRAMA)."""
+    """Prepara as 10 abas da planilha para exportação em `.xlsx` (7 abas originais + FINANCEIRO + CRONOGRAMA + ELÉTRICA)."""
     # Aba 1: Q. ÁREAS
     cabecalho_qa = (
         ["NÍVEL", "PAVIMENTO", "UNIDADES TOTAL"]
@@ -366,6 +371,41 @@ def _montar_abas_xlsx(
     for ft in fin_cron.fluxo_trimestral:
         linhas_cron.append([ft.periodo, ft.avanco_fisico_pct, ft.avanco_acumulado_pct, ft.desembolso_total_rs, ft.receita_liquida_rs, ft.saldo_periodo_rs, ft.saldo_acumulado_rs])
 
+    # Aba 10: ELÉTRICA
+    linhas_el: List[List[Any]] = [
+        ["PRÉVIA DE ENGENHARIA ELÉTRICA — DEMANDA, SUBESTAÇÃO E CUSTOS — " + nome_empreendimento],
+        ["DIAGNÓSTICO DE ENTRADA DE ENERGIA E SUBESTAÇÃO (ENEL SP / NBR 5410)"],
+        ["Precisa de Subestação / Posto de Transformação?", "SIM" if eletrica.precisa_subestacao else "NÃO", eletrica.classificacao_subestacao],
+        ["Faixa de Atendimento Concessionária", eletrica.faixa_atendimento],
+        ["Tensão de Fornecimento", eletrica.tensao_fornecimento],
+        ["Configuração Recomendada", eletrica.configuracao_subestacao],
+        ["Transformador Recomendado (kVA)", eletrica.transformador_recomendado_kva or "Isento (BT Direto)"],
+        ["Área Técnica p/ Subestação no Térreo (m²)", eletrica.area_tecnica_subestacao_m2],
+        ["Grupo Gerador de Emergência Recomendado (kVA)", eletrica.gerador_emergencia_kva],
+        [],
+        ["DEMANDA MÉDIA DOS APARTAMENTOS E DO EDIFÍCIO"],
+        ["Padrão Eletrodomésticos / Aquecimento", eletrica.padrao_eletrodomesticos],
+        ["Total de Unidades Residenciais (UH)", eletrica.total_unidades_residenciais],
+        ["Área Privativa Média por Apartamento (m²)", eletrica.area_media_apto_m2],
+        ["Carga Instalada Média por Apartamento (kVA)", eletrica.carga_instalada_por_apto_kva],
+        ["Fator de Diversidade Coletivo Aplicado", eletrica.fator_diversidade_aplicado],
+        ["Demanda Média Diversificada por Apartamento (kVA/UH)", eletrica.demanda_media_por_apto_kva],
+        ["Demanda Média Diversificada por Apartamento (kW/UH)", eletrica.demanda_media_por_apto_kw],
+        ["Corrente Média Equivalente por Apto em 220V (A)", eletrica.corrente_media_por_apto_220v_a],
+        ["Disjuntor Padrão da Unidade (A)", f"{eletrica.disjuntor_padrao_apto_in_a} A ({eletrica.tipo_fornecimento_apto})"],
+        ["Demanda Total dos Apartamentos (kVA)", eletrica.demanda_apartamentos_kva],
+        ["Demanda do Condomínio — Elevadores, Bombas e Comum (kVA)", eletrica.demanda_condominio_kva],
+        ["Demanda de Lojas / Fachada Ativa (kVA)", eletrica.demanda_lojas_kva],
+        ["Demanda de Recarga de Veículos Elétricos (kVA)", eletrica.demanda_recarga_ve_kva],
+        ["TOTAL DEMANDA DO EMPREENDIMENTO (kVA)", eletrica.demanda_total_edificio_kva],
+        [],
+        ["ORÇAMENTO ESTIMADO DA PARTE ELÉTRICA"],
+        ["Item", "Especificação Técnica", "Valor Estimado (R$)", "Custo por UH (R$/UH)", "% do Custo Elétrico"],
+    ]
+    for ie in eletrica.itens_custo_eletrica:
+        linhas_el.append([ie.item, ie.especificacao, ie.valor_rs, ie.custo_por_uh_rs, ie.participacao_pct])
+    linhas_el.append(["TOTAL PARTE ELÉTRICA", f"R$ {eletrica.custo_eletrica_por_m2_rs:,.2f}/m² construído", eletrica.custo_total_eletrica_rs, eletrica.custo_eletrica_por_uh_rs, 100.0])
+
     return [
         ("Q. ÁREAS", linhas_qa),
         ("Q. LUOPS", linhas_luops),
@@ -376,6 +416,7 @@ def _montar_abas_xlsx(
         ("DESNÍVEL", linhas_desn),
         ("FINANCEIRO", linhas_fin),
         ("CRONOGRAMA", linhas_cron),
+        ("ELÉTRICA", linhas_el),
     ]
 
 
@@ -722,9 +763,47 @@ def renderizar_estudo_completo_planilha(resultado: ResultadoTerreno) -> None:
     # ETAPAS 5 e 6: Quadro de Áreas por Pavimento (Matriz Completa)
     # -----------------------------------------------------------------------
     titulo_secao(
-        "Etapas 5 e 6 — Quadro de Áreas Pavimento a Pavimento (Aba Q. ÁREAS)",
-        "Cota de nível do Térreo ancorada na topografia do GeoSampa. Edite qualquer célula ou use o preenchimento automático pelo potencial do terreno.",
+        "Etapas 5 e 6 — Quadro de Áreas Pavimento a Pavimento e Opção de Fachada Ativa (Aba Q. ÁREAS)",
+        "Selecione abaixo se o empreendimento terá Fachada Ativa (lojas NR1-3 não computáveis no Térreo) e edite qualquer pavimento.",
     )
+
+    limite_fa_m2 = round(indices.area_terreno_m2 * indices.fachada_ativa_pct, 2)
+    area_fa_sugerida = round(indices.area_terreno_m2 * min(0.15, max(0.10, indices.fachada_ativa_pct)), 2)
+
+    cfa1, cfa2, cfa3 = st.columns([1.8, 1.0, 1.2], vertical_alignment="center")
+    with cfa1:
+        opcao_fachada_ativa = st.radio(
+            f"Terá Fachada Ativa no Térreo? (Limite na zona {indices.zona}: até {indices.fachada_ativa_pct * 100:.0f}% do terreno = {_fmt_num(limite_fa_m2, 'm²')})",
+            options=[
+                "Sim — Com Fachada Ativa (Lojas NR1-3 no Térreo)",
+                "Não — Sem Fachada Ativa (100% Residencial)",
+            ],
+            index=0 if indices.fachada_ativa_pct >= 0.5 else 1,
+            horizontal=True,
+            key=f"viab_radio_fa_{indices.zona}",
+        )
+    usar_fachada_ativa = opcao_fachada_ativa.startswith("Sim")
+
+    with cfa2:
+        qtd_lojas_fa_in = st.number_input(
+            "Nº de Lojas na Fachada Ativa (NR1-3)",
+            min_value=1,
+            max_value=20,
+            value=1 if indices.area_terreno_m2 < 600 else 2,
+            step=1,
+            disabled=not usar_fachada_ativa,
+            key="viab_qtd_lojas_fa",
+        )
+    with cfa3:
+        area_fa_in = st.number_input(
+            f"Área de Fachada Ativa no Térreo (m² — máx. {_fmt_num(limite_fa_m2, 'm²')})",
+            min_value=0.0,
+            max_value=float(max(1.0, limite_fa_m2)),
+            value=float(min(area_fa_sugerida, limite_fa_m2)),
+            step=5.0,
+            disabled=not usar_fachada_ativa,
+            key=f"viab_area_fa_{indices.area_terreno_m2}_{indices.zona}",
+        )
 
     chave_state_pavs = "viab_df_pavimentos"
     col_b1, col_b2, col_b3, col_b4 = st.columns([1.1, 1.4, 1.2, 1.2], vertical_alignment="bottom")
@@ -748,6 +827,9 @@ def renderizar_estudo_completo_planilha(resultado: ResultadoTerreno) -> None:
                 indices=indices,
                 cota_terreno_m=cota_terreo_in,
                 qtd_pav_tipo=int(qtd_pav_tipo),
+                incluir_fachada_ativa=usar_fachada_ativa,
+                area_fachada_ativa_m2=float(area_fa_in) if usar_fachada_ativa else 0.0,
+                qtd_lojas_fa=int(qtd_lojas_fa_in) if usar_fachada_ativa else 0,
             )
             st.session_state[chave_state_pavs] = _df_pavimentos_para_edicao(pavs_auto)
             st.rerun()
@@ -774,8 +856,25 @@ def renderizar_estudo_completo_planilha(resultado: ResultadoTerreno) -> None:
             indices=indices,
             cota_terreno_m=cota_terreo_in,
             qtd_pav_tipo=int(qtd_pav_tipo),
+            incluir_fachada_ativa=usar_fachada_ativa,
+            area_fachada_ativa_m2=float(area_fa_in) if usar_fachada_ativa else 0.0,
+            qtd_lojas_fa=int(qtd_lojas_fa_in) if usar_fachada_ativa else 0,
         )
         st.session_state[chave_state_pavs] = _df_pavimentos_para_edicao(pavs_iniciais)
+
+    # Sincroniza imediatamente a seleção de Fachada Ativa (Sim / Não) com a linha do Térreo na matriz
+    assinatura_fa = (usar_fachada_ativa, int(qtd_lojas_fa_in) if usar_fachada_ativa else 0, round(float(area_fa_in), 2) if usar_fachada_ativa else 0.0)
+    if st.session_state.get("viab_ultima_assinatura_fa") != assinatura_fa:
+        st.session_state["viab_ultima_assinatura_fa"] = assinatura_fa
+        df_sync = st.session_state[chave_state_pavs].copy()
+        if not df_sync.empty and "UH (NR1-3)" in df_sync.columns and "[N.Comp] (NR1-3) F.A." in df_sync.columns:
+            if usar_fachada_ativa:
+                df_sync.loc[df_sync.index[0], "UH (NR1-3)"] = float(qtd_lojas_fa_in)
+                df_sync.loc[df_sync.index[0], "[N.Comp] (NR1-3) F.A."] = round(float(area_fa_in), 2)
+            else:
+                df_sync["UH (NR1-3)"] = 0.0
+                df_sync["[N.Comp] (NR1-3) F.A."] = 0.0
+            st.session_state[chave_state_pavs] = df_sync
 
     df_editado = st.data_editor(
         st.session_state[chave_state_pavs],
@@ -1450,11 +1549,144 @@ def renderizar_estudo_completo_planilha(resultado: ResultadoTerreno) -> None:
     )
 
     # -----------------------------------------------------------------------
-    # ETAPA 14: Exportação da Planilha Completa (.xlsx com as 9 abas)
+    # ETAPA 14: Prévia de Engenharia Elétrica (Subestação, Demanda e Custos)
     # -----------------------------------------------------------------------
     titulo_secao(
-        "Etapa 14 — Exportar Planilha Completa Calculada (.xlsx)",
-        "Gera o arquivo Excel (.xlsx) com as 9 abas (Q. ÁREAS, Q. LUOPS, Q. ANEXOS, CALC. ÁGUA, ELEVADOR, DADOS, DESNÍVEL, FINANCEIRO e CRONOGRAMA) preenchidas com os dados do terreno.",
+        "Etapa 14 — Prévia da Parte Elétrica (Subestação, Demanda Média dos Apartamentos e Custo Estimado)",
+        "Cálculo preliminar de demanda (NBR 5410 / Norma Enel SP para Edificações Coletivas), diagnóstico de obrigatoriedade de Subestação (limite de 75 kVA BT) e orçamento elétrico.",
+    )
+
+    cel1, cel2, cel3, cel4 = st.columns([1.8, 0.9, 1.0, 1.0])
+    with cel1:
+        perfil_el_sel = st.selectbox(
+            "Padrão de Equipamentos dos Apartamentos",
+            options=list(PERFIS_ELETRICOS_APTO.keys()),
+            format_func=lambda k: str(PERFIS_ELETRICOS_APTO[k]["nome"]),
+            index=0,
+            key="viab_el_perfil",
+        )
+    with cel2:
+        vagas_ve_in = st.number_input(
+            "Pontos Recarga Veículo Elétrico (Wallbox 7,4 kVA)",
+            min_value=0,
+            max_value=50,
+            value=2,
+            step=1,
+            key="viab_el_vagas_ve",
+        )
+    with cel3:
+        inc_gerador_in = st.checkbox(
+            "Incluir Grupo Gerador de Emergência",
+            value=True,
+            key="viab_el_gerador",
+        )
+    with cel4:
+        custo_el_m2_in = st.number_input(
+            "Custo Base Instalações Elétricas (R$/m²)",
+            min_value=100.0,
+            max_value=800.0,
+            value=235.0,
+            step=10.0,
+            key="viab_el_custo_m2",
+        )
+
+    eletrica = calcular_previa_eletrica(
+        quadro=quadro,
+        num_elevadores=int(n_elev_in),
+        perfil_chave=perfil_el_sel,
+        vagas_recarga_ve=int(vagas_ve_in),
+        incluir_gerador_emergencia=bool(inc_gerador_in),
+        custo_base_instalacao_m2_rs=float(custo_el_m2_in),
+    )
+
+    for al_el in eletrica.alertas:
+        nota(al_el, "warn" if eletrica.precisa_subestacao else "info")
+
+    grade_cards(
+        [
+            (
+                "Precisa de Subestação?",
+                f"⚡ SIM ({eletrica.transformador_recomendado_kva:g} kVA)" if eletrica.precisa_subestacao else "✅ NÃO (BT Direto)",
+                eletrica.tensao_fornecimento,
+            ),
+            (
+                "Demanda Média por Apartamento",
+                f"{_fmt_num(eletrica.demanda_media_por_apto_kva, 'kVA/apto')} ({_fmt_num(eletrica.demanda_media_por_apto_kw, 'kW')})",
+                f"Carga inst.: {_fmt_num(eletrica.carga_instalada_por_apto_kva, 'kVA')} · Fator div.: {eletrica.fator_diversidade_aplicado:.2f} · ~{eletrica.corrente_media_por_apto_220v_a:.1f} A (Disj. {eletrica.disjuntor_padrao_apto_in_a}A)",
+            ),
+            (
+                "Demanda Total dos Apartamentos",
+                _fmt_num(eletrica.demanda_apartamentos_kva, "kVA"),
+                f"{eletrica.total_unidades_residenciais} UH × {_fmt_num(eletrica.demanda_media_por_apto_kva, 'kVA/apto')} (área média {eletrica.area_media_apto_m2:.1f} m²)",
+            ),
+            (
+                "Demanda Condomínio + Lojas + VE",
+                _fmt_num(eletrica.demanda_condominio_kva + eletrica.demanda_lojas_kva + eletrica.demanda_recarga_ve_kva, "kVA"),
+                f"Condomínio: {_fmt_num(eletrica.demanda_condominio_kva, 'kVA')} · Lojas: {_fmt_num(eletrica.demanda_lojas_kva, 'kVA')} · VE: {_fmt_num(eletrica.demanda_recarga_ve_kva, 'kVA')}",
+            ),
+            (
+                "Demanda Total do Edifício",
+                _fmt_num(eletrica.demanda_total_edificio_kva, "kVA"),
+                f"Área técnica p/ Subestação: {_fmt_num(eletrica.area_tecnica_subestacao_m2, 'm²', 0)} · Gerador: {_fmt_num(eletrica.gerador_emergencia_kva, 'kVA', 0)}",
+            ),
+            (
+                "Custo Total Estimado Parte Elétrica",
+                f"R$ {_fmt_num(eletrica.custo_total_eletrica_rs)}",
+                f"R$ {_fmt_num(eletrica.custo_eletrica_por_uh_rs)}/UH · R$ {_fmt_num(eletrica.custo_eletrica_por_m2_rs)}/m² construído",
+            ),
+        ]
+    )
+
+    col_el_dem, col_el_orc = st.columns([1.0, 1.3], gap="large")
+    with col_el_dem:
+        st.markdown("**Quadro Resumo de Cargas e Padrão de Entrada**")
+        tabela(
+            ["Parâmetro Técnico", "Valor Calculado", "Critério / Norma"],
+            [
+                ["Unidades Residenciais", f"{eletrica.total_unidades_residenciais} UH (média {eletrica.area_media_apto_m2:.1f} m²)", "Quadro de Áreas"],
+                ["Carga Instalada por Apto", _fmt_num(eletrica.carga_instalada_por_apto_kva, "kVA"), "NBR 5410 (Ilum. + TUGs + TUEs)"],
+                ["Demanda Diversificada / Apto", f"{_fmt_num(eletrica.demanda_media_por_apto_kva, 'kVA')} ({_fmt_num(eletrica.demanda_media_por_apto_kw, 'kW')})", f"Fator diversidade coletivo = {eletrica.fator_diversidade_aplicado:.2f}"],
+                ["Proteção Individual Apto", f"Disjuntor {eletrica.disjuntor_padrao_apto_in_a} A", eletrica.tipo_fornecimento_apto],
+                ["Demanda Total Apartamentos", _fmt_num(eletrica.demanda_apartamentos_kva, "kVA"), f"{eletrica.total_unidades_residenciais} × {_fmt_num(eletrica.demanda_media_por_apto_kva, 'kVA')}"],
+                ["Demanda Condomínio (Serviço)", _fmt_num(eletrica.demanda_condominio_kva, "kVA"), f"{int(n_elev_in)} elevador(es), bombas e áreas comuns"],
+                ["Demanda Lojas + Recarga VE", _fmt_num(eletrica.demanda_lojas_kva + eletrica.demanda_recarga_ve_kva, "kVA"), f"Fachada Ativa + {int(vagas_ve_in)} Wallbox VE"],
+                ["DEMANDA TOTAL DO PRÉDIO", _fmt_num(eletrica.demanda_total_edificio_kva, "kVA"), eletrica.faixa_atendimento],
+                ["Subestação / Transformador", eletrica.configuracao_subestacao, f"Reserva Térreo: {eletrica.area_tecnica_subestacao_m2:.0f} m²"],
+            ],
+        )
+
+    with col_el_orc:
+        st.markdown("**Orçamento Estimado da Parte Elétrica (Entrada + Subestação + Prumadas + Unidades + Comum)**")
+        tabela(
+            ["Grupo / Etapa Elétrica", "Especificação Técnica", "Custo Total (R$)", "Custo / UH (R$)", "%"],
+            [
+                [
+                    ie.item,
+                    ie.especificacao,
+                    f"R$ {_fmt_num(ie.valor_rs)}",
+                    f"R$ {_fmt_num(ie.custo_por_uh_rs)}",
+                    _fmt_num(ie.participacao_pct, "%", 1),
+                ]
+                for ie in eletrica.itens_custo_eletrica
+            ]
+            + [
+                [
+                    "TOTAL ESTIMADO ELÉTRICA",
+                    f"Equivalente a R$ {_fmt_num(eletrica.custo_eletrica_por_m2_rs)}/m² de área construída",
+                    f"R$ {_fmt_num(eletrica.custo_total_eletrica_rs)}",
+                    f"R$ {_fmt_num(eletrica.custo_eletrica_por_uh_rs)}",
+                    "100,0%",
+                ]
+            ],
+            destacar_ultima_linha=True,
+        )
+
+    # -----------------------------------------------------------------------
+    # ETAPA 15: Exportação da Planilha Completa (.xlsx com as 10 abas coloridas)
+    # -----------------------------------------------------------------------
+    titulo_secao(
+        "Etapa 15 — Exportar Planilha Completa Colorida e Estilizada (.xlsx)",
+        "Gera o arquivo Excel (.xlsx) com as 10 abas coloridas (Q. ÁREAS, Q. LUOPS, Q. ANEXOS, CALC. ÁGUA, ELEVADOR, DADOS, DESNÍVEL, FINANCEIRO, CRONOGRAMA e ELÉTRICA).",
     )
     abas_xlsx = _montar_abas_xlsx(
         entrada=entrada,
@@ -1466,6 +1698,7 @@ def renderizar_estudo_completo_planilha(resultado: ResultadoTerreno) -> None:
         elevador=elevador,
         desnivel=desnivel,
         fin_cron=fin_cron,
+        eletrica=eletrica,
         nome_empreendimento=nome_empreendimento,
         df_checklist=df_chk_edit,
         df_mix=df_mix_edit,
@@ -1473,7 +1706,7 @@ def renderizar_estudo_completo_planilha(resultado: ResultadoTerreno) -> None:
     xlsx_bytes = gerar_xlsx_bytes(abas_xlsx)
     sql_base = entrada.sqls[0].replace(".", "_") if entrada.sqls else "terreno"
     st.download_button(
-        "📥 Baixar Planilha Completa de Viabilidade (.xlsx — 9 Abas + Financeiro e Cronograma)",
+        "📥 Baixar Planilha Completa Colorida (.xlsx — 10 Abas + Financeiro, Cronograma e Elétrica)",
         data=xlsx_bytes,
         file_name=f"QUADRO_DE_AREAS_{sql_base}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

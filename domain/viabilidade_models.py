@@ -371,3 +371,58 @@ class ResultadoFinanceiroCronograma:
     notas: List[str] = field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# Etapa 14 — Prévia de Engenharia Elétrica (Demanda, Subestação e Custos)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ItemCustoEletrica:
+    item: str
+    especificacao: str
+    valor_rs: float
+    custo_por_uh_rs: float
+    participacao_pct: float
+
+
+@dataclass
+class ResultadoPreviaEletrica:
+    padrao_eletrodomesticos: str
+    total_unidades_residenciais: int
+    area_media_apto_m2: float
+
+    # Demandas por apartamento (individual vs. diversificada no barramento coletivo)
+    carga_instalada_por_apto_kva: float
+    fator_diversidade_aplicado: float
+    demanda_media_por_apto_kva: float
+    demanda_media_por_apto_kw: float
+    corrente_media_por_apto_220v_a: float
+    disjuntor_padrao_apto_in_a: int
+    tipo_fornecimento_apto: str
+
+    # Demandas consolidadas do edifício (kVA)
+    demanda_apartamentos_kva: float
+    demanda_condominio_kva: float
+    demanda_lojas_kva: float
+    demanda_recarga_ve_kva: float
+    demanda_total_edificio_kva: float
+
+    # Subestação / Padrão de Entrada Concessionária (Enel SP)
+    precisa_subestacao: bool
+    faixa_atendimento: str
+    classificacao_subestacao: str
+    tensao_fornecimento: str
+    transformador_recomendado_kva: Optional[float]
+    configuracao_subestacao: str
+    area_tecnica_subestacao_m2: float
+    gerador_emergencia_kva: float
+
+    # Custos estimados da parte elétrica
+    itens_custo_eletrica: List[ItemCustoEletrica]
+    custo_entrada_subestacao_rs: float
+    custo_total_eletrica_rs: float
+    custo_eletrica_por_uh_rs: float
+    custo_eletrica_por_m2_rs: float
+    alertas: List[str] = field(default_factory=list)
+
+
+

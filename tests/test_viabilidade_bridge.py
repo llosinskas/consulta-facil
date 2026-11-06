@@ -12,6 +12,7 @@ from services.agua_elevador_engine import (
     gerar_populacao_padrao_pavimentos,
 )
 from services.desnivel_engine import calcular_desnivel_reservatorios
+from services.eletrica_engine import calcular_previa_eletrica
 from services.excel_exporter import gerar_xlsx_bytes
 from services.financeiro_cronograma_engine import calcular_retorno_financeiro_e_cronograma
 from services.geosampa_client import LOTES_EXEMPLO_SP
@@ -140,6 +141,21 @@ class TestQuadroAreasLUOPSEAnexos(unittest.TestCase):
         self.assertEqual(len(anexos.acessibilidade), 11)
         self.assertEqual(len(anexos.vagas), 4)
 
+        # Verifica opção Com Fachada Ativa (True) vs. Sem Fachada Ativa (False)
+        pavs_com_fa = distribuir_areas_automaticas_por_terreno(
+            indices, cota_terreno_m=790.0, qtd_pav_tipo=9, incluir_fachada_ativa=True, area_fachada_ativa_m2=132.0, qtd_lojas_fa=2
+        )
+        quadro_com_fa = calcular_quadro_areas(pavs_com_fa, indices)
+        self.assertAlmostEqual(quadro_com_fa.area_loja_m2, 132.0, places=2)
+        self.assertAlmostEqual(quadro_com_fa.subtotal_unidades["u_nr1_3"], 2.0, places=2)
+
+        pavs_sem_fa = distribuir_areas_automaticas_por_terreno(
+            indices, cota_terreno_m=790.0, qtd_pav_tipo=9, incluir_fachada_ativa=False
+        )
+        quadro_sem_fa = calcular_quadro_areas(pavs_sem_fa, indices)
+        self.assertEqual(quadro_sem_fa.area_loja_m2, 0.0)
+        self.assertEqual(quadro_sem_fa.subtotal_unidades["u_nr1_3"], 0.0)
+
 
 class TestAguaElevadorEDesnivel(unittest.TestCase):
     """Testa as Etapas 9, 10, 11 e 12 (Água/População, Elevador NBR 5665, Desnível A/B/C e Exportação .xlsx)."""
@@ -193,15 +209,26 @@ class TestAguaElevadorEDesnivel(unittest.TestCase):
 
         xlsx_bytes = gerar_xlsx_bytes(
             [
-                ("Q. ÁREAS", [["Col1", "Col2"], ["Teste", 123.45]]),
-                ("Q. LUOPS", [["Parâmetro", "Valor"], ["Área", 500]]),
+                ("Q. ÁREAS", [["QUADRO DE ÁREAS"], ["NÍVEL", "PAVIMENTO"], [784.40, "Térreo"], ["", "SUBTOTAL", 123.45]]),
+                ("CRONOGRAMA", [["CRONOGRAMA"], ["Ordem", "Fase", "Etapa", "Mês Início", "Mês Fim", "Duração (m)", "Peso Obra (%)", "Custo Estimado (R$)", "M01", "M02"], [1, "Pré-Obra", "Projetos", 1, 1, 1, 0.0, 50000.0, 50000.0, 0.0]]),
             ]
         )
+        import xml.etree.ElementTree as ET
         with zipfile.ZipFile(io.BytesIO(xlsx_bytes), "r") as zf:
             names = zf.namelist()
             self.assertIn("xl/workbook.xml", names)
+            self.assertIn("xl/styles.xml", names)
             self.assertIn("xl/worksheets/sheet1.xml", names)
             self.assertIn("xl/worksheets/sheet2.xml", names)
+            # Garante que todos os XMLs são 100% bem-formados e possuem estilos/cores
+            ET.fromstring(zf.read("xl/styles.xml"))
+            s1_xml = zf.read("xl/worksheets/sheet1.xml").decode("utf-8")
+            s2_xml = zf.read("xl/worksheets/sheet2.xml").decode("utf-8")
+            ET.fromstring(s1_xml)
+            ET.fromstring(s2_xml)
+            self.assertIn("tabColor", s1_xml)
+            self.assertIn("mergeCells", s1_xml)
+            self.assertIn('s="13"', s2_xml)  # Estilo colorido de barra Gantt Pré-Obra
 
     def test_retorno_financeiro_e_cronograma_de_obra(self) -> None:
         exemplo = LOTES_EXEMPLO_SP["Vila Mariana - Zona Mista (ZM)"]
@@ -237,6 +264,13 @@ class TestAguaElevadorEDesnivel(unittest.TestCase):
         )
         self.assertGreater(len(fin_cron.fluxo_trimestral), 0)
         self.assertAlmostEqual(fin_cron.fluxo_trimestral[-1].avanco_acumulado_pct, 100.0, places=1)
+
+        prev_el = calcular_previa_eletrica(quadro=quadro, num_elevadores=2)
+        self.assertGreater(prev_el.demanda_media_por_apto_kva, 1.0)
+        self.assertGreater(prev_el.demanda_total_edificio_kva, 75.0)
+        self.assertTrue(prev_el.precisa_subestacao)
+        self.assertIsNotNone(prev_el.transformador_recomendado_kva)
+        self.assertGreater(prev_el.custo_total_eletrica_rs, 0.0)
 
 
 if __name__ == "__main__":
