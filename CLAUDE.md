@@ -155,8 +155,11 @@ novos caches por terreno.
     Etiquetas (cotas, vértices, SQL) usam `interactive=False`; senão o clique "some" sobre elas.
 13. **Exemplos**: são lotes reais; para trocar/adicionar, gere `domain/lotes_exemplo.py` de novo a partir do
     GeoSampa (mesma estrutura) e atualize os nomes usados nos testes (`EX_*`).
-8. **`app.py` faz `importlib.reload`** de todos os módulos (hot-reload do Streamlit). Ao criar um
-   módulo novo usado pelo app, adicione o `import` e o `importlib.reload` correspondentes.
+8. **Nunca use `importlib.reload` no `app.py`/páginas.** O Streamlit já descarrega e reimporta os
+   módulos do projeto quando um arquivo muda. O reload manual a cada execução trocava módulos no meio
+   da execução de outras sessões e quebrava o deploy no Streamlit Cloud (KeyError/ImportError/
+   AttributeError). Estado por sessão nunca em variável global de módulo (use `st.session_state`
+   ou `threading.local`, como em `ui/carregamento.py`).
 9. **Cache do cliente**: `obter_cliente_geosampa(versao=...)` usa `st.cache_resource`; mude a string
    `versao` se alterar o `__init__` do `GeoSampaWFSClient`.
 10. Funções de cálculo **retornam dataclasses** e acumulam avisos em `alertas`/`avisos`/`notas`

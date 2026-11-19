@@ -4,57 +4,14 @@ Execute com:
     .venv\\Scripts\\streamlit.exe run app.py
 """
 
-import importlib
 from typing import Any, Dict, List, Optional
 
 import streamlit as st
 from streamlit_folium import st_folium
 
-import config
-import domain.legislacao_sp
-import domain.lotes_exemplo
-import domain.models
-import domain.tabelas_dados
-import domain.viabilidade_models
-import services.agua_elevador_engine
-import services.desnivel_engine
-import services.eletrica_engine
-import services.excel_exporter
-import services.financeiro_cronograma_engine
-import services.geocoder
-import services.geosampa_client
-import services.quadro_areas_engine
-import services.spatial_analyzer
-import services.viabilidade_bridge
-import ui.carregamento
-import ui.dashboard_cards
-import ui.map_component
-import ui.styles
-import ui.viabilidade_ui
-
-# Garante que módulos atualizados sejam recarregados mesmo com servidor Streamlit já aberto
-importlib.reload(config)
-importlib.reload(domain.legislacao_sp)
-importlib.reload(domain.lotes_exemplo)
-importlib.reload(domain.models)
-importlib.reload(domain.tabelas_dados)
-importlib.reload(domain.viabilidade_models)
-importlib.reload(services.geocoder)
-importlib.reload(services.geosampa_client)
-importlib.reload(services.spatial_analyzer)
-importlib.reload(services.viabilidade_bridge)
-importlib.reload(services.quadro_areas_engine)
-importlib.reload(services.agua_elevador_engine)
-importlib.reload(services.desnivel_engine)
-importlib.reload(services.eletrica_engine)
-importlib.reload(services.excel_exporter)
-importlib.reload(services.financeiro_cronograma_engine)
-importlib.reload(ui.styles)
-importlib.reload(ui.carregamento)
-importlib.reload(ui.dashboard_cards)
-importlib.reload(ui.map_component)
-importlib.reload(ui.viabilidade_ui)
-
+# Não use importlib.reload aqui: o próprio Streamlit recarrega os módulos do projeto que mudaram
+# (file watcher). Recarregar manualmente a cada execução quebrava sessões simultâneas e o deploy
+# no Streamlit Cloud (módulos trocados no meio da execução → KeyError/ImportError/AttributeError).
 from services.geocoder import geocodificar_endereco_sp
 from services.geosampa_client import (
     LOTES_EXEMPLO_SP,

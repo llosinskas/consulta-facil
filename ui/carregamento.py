@@ -12,9 +12,10 @@ botões), impedindo novos cliques até o cálculo terminar. Ao sair do bloco, a 
 A função `progresso(fração 0–1, mensagem)` é o mesmo callback aceito pelos serviços.
 """
 
+import threading
 from contextlib import contextmanager
 from html import escape
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterator
 
 import streamlit as st
 
@@ -35,7 +36,9 @@ _CSS_OVERLAY = """
 </style>
 """
 
-_area_atual: Optional["st.delta_generator.DeltaGenerator"] = None
+# Cada sessão do Streamlit executa o script na própria thread: a área reservada fica por thread,
+# para que um usuário nunca desenhe a camada de carregamento na página de outro.
+_local = threading.local()
 
 
 def reservar_area_carregamento() -> None:
@@ -44,8 +47,7 @@ def reservar_area_carregamento() -> None:
     Deve ser chamada no início de cada execução, antes da sidebar: dentro da sidebar uma
     camada `position: fixed` ficaria presa à largura da barra lateral.
     """
-    global _area_atual
-    _area_atual = st.empty()
+    _local.area = st.empty()
 
 
 def _html_overlay(titulo: str, fracao: float, mensagem: str) -> str:
@@ -65,7 +67,7 @@ def _html_overlay(titulo: str, fracao: float, mensagem: str) -> str:
 @contextmanager
 def tela_de_carregamento(titulo: str, mensagem_inicial: str = "Preparando…") -> Iterator[Callable[[float, str], None]]:
     """Mostra a camada bloqueante com barra de progresso enquanto o bloco `with` executa."""
-    area = _area_atual if _area_atual is not None else st.empty()
+    area = getattr(_local, "area", None) or st.empty()
     estado = {"fracao": 0.0}
 
     def progresso(fracao: float, mensagem: str) -> None:
