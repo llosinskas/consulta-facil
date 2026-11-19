@@ -199,4 +199,4 @@ novos caches por terreno.
 - Comentários de células da planilha no formato `# Q. ÁREAS!D38`.
 - Pontos fracos conhecidos (poucos testes): `financeiro_cronograma_engine`, `eletrica_engine`,
   `desnivel_engine`. Ao alterá-los, escreva testes primeiro.
-- `__pycache__/` está versionado no git (não há `.gitignore`); não inclua novos `.pyc` em commits.
+- `__pycache__/`, `.venv/` e `.pytest_cache/` estão no `.gitignore`.
