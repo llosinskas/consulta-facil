@@ -52,6 +52,7 @@ CONTRATOS = {
         "estimar_prazo_obra_meses": ["area_construida_m2", "num_pavimentos", "sistema_construtivo"],
     },
     "services.eletrica_engine": {"calcular_previa_eletrica": ["quadro"]},
+    "services.volumetria_engine": {"calcular_volumetria": ["geojson_terreno", "quadro", "indices"]},
     "services.aproveitamento": {"calcular_aproveitamento": ["ent"]},
     "services.payback": {"calcular_payback": ["e"], "sensibilidade_payback": ["e"]},
     "services.excel_exporter": {"gerar_xlsx_bytes": ["abas"], "familia_tipologia": ["texto"]},

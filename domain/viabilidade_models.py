@@ -463,3 +463,36 @@ class ResultadoPreviaEletrica:
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Etapa 16 — Volumetria aproximada do edifício (massa 3D sobre o mapa)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class VolumePavimento:
+    """Um pavimento como bloco 3D: planta (WGS84 [lon, lat]) extrudada do piso ao teto."""
+    nome: str
+    tipo: str                                  # "terreo" | "tipo" | "atico" | "inferior"
+    base_m: float                              # altura do piso acima do térreo
+    altura_m: float                            # pé-direito (espessura do bloco)
+    area_m2: float                             # área da planta desenhada
+    area_quadro_m2: float                      # área construída do pavimento no Quadro de Áreas
+    uso_predominante: str                      # categoria de maior área (ex.: "HIS-2") ou "Áreas comuns"
+    poligono_wgs84: List[List[float]]
+    limitado_pela_projecao: bool = False
+
+
+@dataclass
+class ResultadoVolumetria:
+    pavimentos: List[VolumePavimento]
+    altura_total_m: float
+    volume_m3: float
+    area_projecao_m2: float                    # maior planta desenhada
+    recuo_aplicado_m: float
+    gabarito_m: Optional[float]
+    atende_gabarito: Optional[bool]
+    terreno_wgs84: List[List[float]]
+    envelope_wgs84: List[List[float]]          # planta máxima da torre (após recuos e T.O.)
+    centro_latlon: Tuple[float, float]
+    alertas: List[str] = field(default_factory=list)

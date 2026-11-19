@@ -68,6 +68,7 @@ from services.viabilidade_bridge import (
     listar_zonas_disponiveis,
 )
 from ui.styles import grade_cards, nota, tabela, titulo_secao
+from ui.volumetria_ui import renderizar_volumetria
 
 ITENS_CHECKLIST_PADRAO: List[str] = [
     "PLANIALTIMÉTRICO",
@@ -1953,4 +1954,9 @@ def renderizar_estudo_completo_planilha(resultado: ResultadoTerreno) -> None:
         width="stretch",
         key="btn_download_xlsx_completo",
     )
+
+    # -----------------------------------------------------------------------
+    # ETAPA 16: Volume aproximado do edifício no mapa (3D)
+    # -----------------------------------------------------------------------
+    renderizar_volumetria(resultado, quadro, indices)
 

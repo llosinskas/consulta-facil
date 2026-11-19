@@ -669,3 +669,13 @@ def bbox_utm_com_margem(resultado: ResultadoTerreno, margem_m: float = 40.0) -> 
     geoms = [_garantir_geometria_utm(shape(l.geojson_wgs84["geometry"])) for l in resultado.lotes]
     minx, miny, maxx, maxy = unary_union(geoms).bounds
     return minx - margem_m, miny - margem_m, maxx + margem_m, maxy + margem_m
+
+
+def geometria_para_utm(geom_dict: Dict[str, Any]) -> Any:
+    """GeoJSON (UTM ou WGS84) → geometria Shapely em EPSG:31983."""
+    return _garantir_geometria_utm(shape(geom_dict))
+
+
+def geometria_para_wgs84(geom_utm: Any) -> Any:
+    """Geometria Shapely em EPSG:31983 → WGS84 (lon, lat)."""
+    return _converter_para_wgs84(geom_utm)

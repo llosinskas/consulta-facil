@@ -25,7 +25,7 @@ Aplicativo **Streamlit** de **estudo de viabilidade de terrenos em São Paulo**.
 7. **Exporta** tudo para `.xlsx` (gerador OpenXML próprio, sem openpyxl).
 
 Executar: `streamlit run app.py` (Windows: `executar_sistema.bat`, que usa `.venv`).
-Testes: `python -m pytest -q` (69 testes, todos passando; dependências em `requirements.txt`).
+Testes: `python -m pytest -q` (75 testes, todos passando; dependências em `requirements.txt`).
 
 ## 2. Arquitetura em camadas (REGRA PRINCIPAL)
 
@@ -47,7 +47,7 @@ Isso é verificado por `tests/test_arquitetura.py` — rode-o após qualquer mud
 | Arquivo | Conteúdo |
 |---|---|
 | `models.py` | `ResultadoTerreno` (objeto central da parte geoespacial), `LoteIndividual`, `SegmentoAresta`, `DadosTopografia`, `InfoTerritorial`, `ParametrosZoneamento` |
-| `viabilidade_models.py` | Dataclasses que espelham a planilha (comentários indicam a célula): `EntradaGeo`, `IndicesLegais`, `Pavimento`, `QuadroAreas`, `LinhaLimite`, `LinhaQuadro`, `ResultadoAnexos`, `ResultadoAgua`, `ResultadoElevador`, `ResultadoDesnivel`, `ResultadoFinanceiroCronograma`, `ResultadoPreviaEletrica`, `TipologiaPavimento`, `CapacidadePavimento`… e as constantes `COLUNAS_UNIDADES`, `COLUNAS_COMPUTAVEIS`, `COLUNAS_NAO_COMPUTAVEIS`, `MODALIDADES`, `CATEGORIAS_TIPOLOGIA` (categoria → coluna de UH, coluna de área, computável?) |
+| `viabilidade_models.py` | Dataclasses que espelham a planilha (comentários indicam a célula): `EntradaGeo`, `IndicesLegais`, `Pavimento`, `QuadroAreas`, `LinhaLimite`, `LinhaQuadro`, `ResultadoAnexos`, `ResultadoAgua`, `ResultadoElevador`, `ResultadoDesnivel`, `ResultadoFinanceiroCronograma`, `ResultadoPreviaEletrica`, `TipologiaPavimento`, `CapacidadePavimento`, `VolumePavimento`, `ResultadoVolumetria`… e as constantes `COLUNAS_UNIDADES`, `COLUNAS_COMPUTAVEIS`, `COLUNAS_NAO_COMPUTAVEIS`, `MODALIDADES`, `CATEGORIAS_TIPOLOGIA` (categoria → coluna de UH, coluna de área, computável?) |
 | `legislacao_sp.py` | **Fonte legal "oficial" conferida**: Quadro 3/3A LPUOS (Lei 16.402 + 18.081/24) em `QUADRO_3: Dict[str, ParametrosZonaLei]`, taxa de permeabilidade, PA, fatores Fs, Fp (Quadro 6), `macrozona_da_macroarea` (PDE arts. 10 e 16) |
 | `zoning_rules.py` | Converte `legislacao_sp.QUADRO_3` em `ParametrosZoneamento` (`obter_parametros_zoneamento`) para painel/mapa |
 | `lotes_exemplo.py` | **Gerado** a partir do GeoSampa: `LOTES_EXEMPLO_SP` (lotes **reais**; o 1º é o terreno inicial do app) e `LOTES_VIZINHOS_DEMO_UTM` (vizinhos reais, clicáveis offline). Reexportados por `geosampa_client` |
@@ -58,13 +58,14 @@ Isso é verificado por `tests/test_arquitetura.py` — rode-o após qualquer mud
 |---|---|---|
 | `geosampa_client.py` | 1 | `GeoSampaWFSClient` (WFS/WMS, auto-descoberta de camadas/schema, busca por SQL e por ponto); validadores `validar_sql_input`, `extrair_multiplos_sqls`, `validar_coordenadas_sp`; dados demo `LOTES_EXEMPLO_SP`, `LOTES_VIZINHOS_DEMO_UTM` |
 | `geocoder.py` | 1 | `geocodificar_endereco_sp(texto) → (latlon, endereco_fmt, erro)` |
-| `spatial_analyzer.py` | 1 | `processar_terreno_completo(features, client, ..., progresso=None) → ResultadoTerreno`; `alternar_lote_na_selecao`; `consultar_enquadramento_pelo_ponto_do_lote`; `encontrar_feicao_no_ponto(feats, lat, lon)` (clique sem rede); `bbox_utm_com_margem` |
+| `spatial_analyzer.py` | 1 | `processar_terreno_completo(features, client, ..., progresso=None) → ResultadoTerreno`; `alternar_lote_na_selecao`; `consultar_enquadramento_pelo_ponto_do_lote`; `encontrar_feicao_no_ponto(feats, lat, lon)` (clique sem rede); `bbox_utm_com_margem`; `geometria_para_utm` / `geometria_para_wgs84` |
 | `viabilidade_bridge.py` | 2–4 | `extrair_entrada_geo(ResultadoTerreno, area_doacao, zona_override, pa_override) → EntradaGeo`; `calcular_indices_legais(EntradaGeo, modalidade, ca_customizado) → IndicesLegais` |
 | `quadro_areas_engine.py` | 6–8 | `gerar_pavimentos_padrao`, `distribuir_areas_automaticas_por_terreno(IndicesLegais, ...) → List[Pavimento]`; `calcular_quadro_areas(pavs, indices, ...) → QuadroAreas`; tipologias da Etapa 5: `tipologias_padrao`, `validar_tipologias`, `aplicar_tipologias_aos_pavimentos(pavs, tipologias, pct_circ…) → List[Pavimento]`, `limites_pavimento_tipo`, `maximo_unidades_por_pavimento`, `calcular_capacidade_pavimentos(pavs, indices) → List[CapacidadePavimento]`; `calcular_quadro_luops(indices, quadro, ...) → List[LinhaQuadro]`; `calcular_anexos(indices, quadro, ...) → ResultadoAnexos` |
 | `agua_elevador_engine.py` | 9–10 | `calcular_agua_e_populacao(List[PavimentoPopulacao], ...) → ResultadoAgua`; `calcular_trafego_elevadores(populacao, ...) → ResultadoElevador` |
 | `desnivel_engine.py` | 11 | `calcular_desnivel_reservatorios(cotas, trechos, ...) → ResultadoDesnivel` |
 | `financeiro_cronograma_engine.py` | 13 | `calcular_retorno_financeiro_e_cronograma(EntradaGeo, IndicesLegais, QuadroAreas, preços/custos...) → ResultadoFinanceiroCronograma` |
 | `eletrica_engine.py` | 14 | `calcular_previa_eletrica(QuadroAreas, ...) → ResultadoPreviaEletrica` |
+| `volumetria_engine.py` | 16 | `calcular_volumetria(geojson_terreno, QuadroAreas, IndicesLegais) → ResultadoVolumetria`: um bloco 3D por pavimento (área = área construída do pavimento no quadro); embasamento até 10 m sem recuo lateral, torre acima de 10 m com o recuo do Quadro 3; tudo limitado pela projeção (T.O.). Frente do lote não identificada (só avisa o recuo de frente) |
 | `aproveitamento.py` | — | `calcular_aproveitamento(EntradaAproveitamento) → ResultadoAproveitamento` (memória de cálculo com base legal; usa `legislacao_sp`) |
 | `payback.py` | — | `calcular_payback(EntradaPayback) → ResultadoPayback`; `sensibilidade_payback` |
 | `excel_exporter.py` | 12 | `gerar_xlsx_bytes(List[(nome_aba, linhas)]) → bytes`. Cores por tipologia automáticas: colunas cujo **cabeçalho** cita uma tipologia (`familia_tipologia`) e linhas de tabelas com coluna **"CATEGORIA"** recebem a cor de `CORES_TIPOLOGIA` |
@@ -80,6 +81,7 @@ Isso é verificado por `tests/test_arquitetura.py` — rode-o após qualquer mud
 | `ui/payback_ui.py` | Premissas, indicadores e gráficos Altair do payback |
 | `ui/map_component.py` | `construir_mapa_terreno(..., lotes_vizinhos=None, aviso_carregando_ao_clicar=False)` (Folium: cotas, vértices, legenda, WMS, vizinhos clicáveis, aviso "Carregando…" no clique) |
 | `ui/carregamento.py` | `reservar_area_carregamento()` (1ª linha do `main`) e `with tela_de_carregamento(titulo) as progresso:` — camada que bloqueia a página com barra de progresso; `sub_progresso` mapeia subetapas |
+| `ui/volumetria_ui.py` | Etapa 16 (fim do estudo): `renderizar_volumetria(resultado, quadro, indices)` — mapa 3D com `pydeck` (já vem com o Streamlit), cores das tipologias iguais às do Excel, gabarito da zona como envelope |
 | `ui/styles.py` | CSS global e componentes HTML: `titulo_secao`, `grade_cards`, `tabela`, `nota(texto, tipo)`, `cabecalho_terreno` |
 
 ## 4. Fluxo de dados (pipeline)
@@ -101,7 +103,8 @@ Busca (SQL/endereço/coord/clique)
                  ├─ calcular_desnivel_reservatorios
                  ├─ calcular_retorno_financeiro_e_cronograma
                  ├─ calcular_previa_eletrica
-                 └─ gerar_xlsx_bytes (download)
+                 ├─ gerar_xlsx_bytes (download)
+                 └─ Etapa 16: calcular_volumetria → renderizar_volumetria (3D no mapa)
 ```
 
 Detalhamento célula a célula da planilha: `PLANO_CONEXAO_GEOSAMPA_CALCULOS.md` e
@@ -183,6 +186,8 @@ novos caches por terreno.
 - **Texto/estilo de UI**: use os componentes de `ui/styles.py`; não espalhe CSS inline.
 - **Nova categoria de unidade**: coluna em `COLUNAS_UNIDADES` e de área em `COLUNAS_*COMPUTAVEIS`,
   entrada em `CATEGORIAS_TIPOLOGIA` e cor em `excel_exporter.CORES_TIPOLOGIA` (variantes antes da base).
+- **Testar o 3D (pydeck) no Chromium headless**: lance com `--use-gl=angle --use-angle=swiftshader
+  --enable-unsafe-swiftshader`; sem acesso ao Carto o mapa de fundo some, mas os blocos aparecem.
 - **Testar no navegador (container sem CDN)**: o folium carrega Leaflet de CDNs; em ambiente sem acesso,
   sirva os arquivos via `npm i leaflet leaflet.fullscreen leaflet-measure leaflet-minimap jquery` e
   `page.route` do Playwright.
