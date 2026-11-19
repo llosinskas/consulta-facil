@@ -16,6 +16,10 @@ from services.eletrica_engine import calcular_previa_eletrica
 from services.excel_exporter import gerar_xlsx_bytes
 from services.financeiro_cronograma_engine import calcular_retorno_financeiro_e_cronograma
 from services.geosampa_client import LOTES_EXEMPLO_SP
+
+# Lotes reais (domain/lotes_exemplo.py). A zona/PA de cada caso é forçada no teste.
+EX_VM_3_LOTES = "Vila Mariana · R. Dr. Pinto Ferraz, 285 a 299 · 3 lotes unificados"  # 1.265 m²
+EX_PINHEIROS = "Pinheiros · R. Teodoro Sampaio, 2363 a 2377 · 3 lotes unificados"  # 965 m²
 from services.quadro_areas_engine import (
     calcular_anexos,
     calcular_quadro_areas,
@@ -48,7 +52,7 @@ class TestViabilidadeBridgeETabelas(unittest.TestCase):
         Verifica se Zona ZM + PA 6 + Lote < 500 m² reproduz exatamente os valores da planilha:
         TO = 0,85 · CA básico = 1 · CA máx LPUOS = 2 · CA HIS = 3 · CA +20% = 3,6 · TP = 0,15 · Gabarito = 28 m.
         """
-        exemplo = LOTES_EXEMPLO_SP["Vila Mariana - Zona Mista (ZM)"]
+        exemplo = LOTES_EXEMPLO_SP[EX_VM_3_LOTES]
         res_terreno = processar_terreno_completo(
             features_lotes=exemplo["features_utm"],
             zona_forcada="ZM",
@@ -70,7 +74,7 @@ class TestViabilidadeBridgeETabelas(unittest.TestCase):
         self.assertIsNone(ind.cota_parte_m2)
 
     def test_faixa_acima_500m2_e_regras_especiais_zcor_pa13_zeu(self) -> None:
-        exemplo = LOTES_EXEMPLO_SP["Pinheiros (Unificação de 3 Lotes Contíguos) - ZEU"]
+        exemplo = LOTES_EXEMPLO_SP[EX_PINHEIROS]
         res_terreno = processar_terreno_completo(
             features_lotes=exemplo["features_utm"],
             zona_forcada="ZEU",
@@ -112,7 +116,7 @@ class TestQuadroAreasLUOPSEAnexos(unittest.TestCase):
         self.assertAlmostEqual(pavs[19].cota_m, 837.32, places=2)
 
     def test_autopreenchimento_fechamento_luops_e_anexos(self) -> None:
-        exemplo = LOTES_EXEMPLO_SP["Vila Mariana - Zona Mista (ZM)"]
+        exemplo = LOTES_EXEMPLO_SP[EX_VM_3_LOTES]
         res_terreno = processar_terreno_completo(
             features_lotes=exemplo["features_utm"],
             zona_forcada="ZM",
@@ -231,7 +235,7 @@ class TestAguaElevadorEDesnivel(unittest.TestCase):
             self.assertIn('s="13"', s2_xml)  # Estilo colorido de barra Gantt Pré-Obra
 
     def test_retorno_financeiro_e_cronograma_de_obra(self) -> None:
-        exemplo = LOTES_EXEMPLO_SP["Vila Mariana - Zona Mista (ZM)"]
+        exemplo = LOTES_EXEMPLO_SP[EX_VM_3_LOTES]
         res_terreno = processar_terreno_completo(
             features_lotes=exemplo["features_utm"],
             zona_forcada="ZM",

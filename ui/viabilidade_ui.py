@@ -17,6 +17,7 @@ from domain.tabelas_dados import (
     TIPOS_ESCADA,
 )
 from domain.viabilidade_models import (
+    CATEGORIAS_TIPOLOGIA,
     COLUNAS_COMPUTAVEIS,
     COLUNAS_NAO_COMPUTAVEIS,
     COLUNAS_UNIDADES,
@@ -28,6 +29,7 @@ from domain.viabilidade_models import (
     Pavimento,
     PavimentoPopulacao,
     QuadroAreas,
+    TipologiaPavimento,
 )
 from services.agua_elevador_engine import (
     DESTINACOES_PREDIO,
@@ -45,11 +47,19 @@ from services.financeiro_cronograma_engine import (
     estimar_prazo_obra_meses,
 )
 from services.quadro_areas_engine import (
+    PCT_CIRC_COMPUTAVEL_PADRAO,
+    PCT_CIRC_NAO_COMPUTAVEL_PADRAO,
+    aplicar_tipologias_aos_pavimentos,
     calcular_anexos,
+    calcular_capacidade_pavimentos,
     calcular_quadro_areas,
     calcular_quadro_luops,
     distribuir_areas_automaticas_por_terreno,
     gerar_pavimentos_padrao,
+    limites_pavimento_tipo,
+    maximo_unidades_por_pavimento,
+    tipologias_padrao,
+    validar_tipologias,
 )
 from services.viabilidade_bridge import (
     calcular_indices_legais,
@@ -107,12 +117,71 @@ def _df_pavimentos_para_edicao(pavimentos: List[Pavimento]) -> pd.DataFrame:
     return pd.DataFrame(linhas)
 
 
+COLUNAS_DF_TIPOLOGIAS = ["Categoria", "Tipologia", "Área privativa (m²)", "UH por pavimento", "Do pavimento", "Até pavimento"]
+
+
+def _df_tipologias(tipologias: List[TipologiaPavimento]) -> pd.DataFrame:
+    """Tipologias → DataFrame do editor da Etapa 5."""
+    return pd.DataFrame(
+        [
+            {
+                "Categoria": t.categoria,
+                "Tipologia": t.nome,
+                "Área privativa (m²)": float(t.area_privativa_m2),
+                "UH por pavimento": int(t.unidades_por_pavimento),
+                "Do pavimento": int(t.pavimento_inicial),
+                "Até pavimento": t.pavimento_final,
+            }
+            for t in tipologias
+        ],
+        columns=COLUNAS_DF_TIPOLOGIAS,
+    ).astype({"Até pavimento": "Int64", "Do pavimento": "Int64", "UH por pavimento": "Int64"})
+
+
+def _tipologias_do_df(df: pd.DataFrame) -> List[TipologiaPavimento]:
+    """DataFrame editado → tipologias (linhas sem categoria ou sem área são ignoradas)."""
+    def _num(v, padrao=None):
+        try:
+            if v is None or pd.isna(v):
+                return padrao
+            return float(v)
+        except (TypeError, ValueError):
+            return padrao
+
+    lista: List[TipologiaPavimento] = []
+    for _, row in df.iterrows():
+        categoria = row.get("Categoria")
+        area = _num(row.get("Área privativa (m²)"))
+        if not categoria or (isinstance(categoria, float) and pd.isna(categoria)) or area is None:
+            continue
+        fim = _num(row.get("Até pavimento"))
+        lista.append(
+            TipologiaPavimento(
+                categoria=str(categoria),
+                nome=str(row.get("Tipologia") or "").strip() if not pd.isna(row.get("Tipologia")) else "",
+                area_privativa_m2=area,
+                unidades_por_pavimento=int(_num(row.get("UH por pavimento"), 0)),
+                pavimento_inicial=int(_num(row.get("Do pavimento"), 1)),
+                pavimento_final=int(fim) if fim is not None else None,
+            )
+        )
+    return lista
+
+
 def _df_editado_para_pavimentos(df: pd.DataFrame, pavs_originais: List[Pavimento]) -> List[Pavimento]:
     """Reconstrói a lista de `Pavimento` a partir do DataFrame editado pelo usuário."""
     novos: List[Pavimento] = []
     for idx, (_, row) in enumerate(df.iterrows()):
-        tipo_orig = pavs_originais[idx].tipo if idx < len(pavs_originais) else "tipo"
         nome_pav = str(row.get("Pavimento", f"Pavimento {idx}"))
+        nome_min = nome_pav.strip().lower()
+        if nome_min.startswith(("térreo", "terreo")):
+            tipo_orig = "terreo"
+        elif nome_min.startswith(("ático", "atico")):
+            tipo_orig = "atico"
+        elif nome_min.endswith("pavimento") or nome_min[:1].isdigit():
+            tipo_orig = "tipo"
+        else:
+            tipo_orig = pavs_originais[idx].tipo if idx < len(pavs_originais) else "tipo"
         pd_m = float(row.get("Pé-direito (m)", 2.72) or 2.72)
 
         unidades: Dict[str, float] = {}
@@ -182,6 +251,27 @@ def _montar_abas_xlsx(
         + [quadro.subtotal_areas[c] for c in TODAS_COLUNAS_AREA]
         + [quadro.area_construida_m2, ""]
     )
+    linhas_qa.append([])
+    linhas_qa.append(["MIX DE TIPOLOGIAS (UNIDADES E ÁREAS POR TIPOLOGIA)"])
+    linhas_qa.append(["CATEGORIA", "TIPOLOGIA", "ÁREA POR UH (m²)", "QUANTIDADE", "ÁREA PRIVATIVA (m²)", "PREÇO/m² (R$)", "VGV (R$)"])
+    tot_qtd_mix, tot_area_mix, tot_vgv_mix = 0, 0.0, 0.0
+    for _, linha_mix in (df_mix if df_mix is not None else pd.DataFrame()).iterrows():
+        try:
+            area_u = float(linha_mix.get("Área (m²)") or 0.0)
+            qtd_u = int(linha_mix.get("Quantidade") or 0)
+            preco_u = float(linha_mix.get("Preço/m² (R$)") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if not linha_mix.get("Categoria") or qtd_u <= 0:
+            continue
+        tot_qtd_mix += qtd_u
+        tot_area_mix += area_u * qtd_u
+        tot_vgv_mix += area_u * qtd_u * preco_u
+        linhas_qa.append([
+            str(linha_mix.get("Categoria")), str(linha_mix.get("Tipologia") or ""), area_u, qtd_u,
+            round(area_u * qtd_u, 2), preco_u, round(area_u * qtd_u * preco_u, 2),
+        ])
+    linhas_qa.append(["TOTAL DO MIX", "", "", tot_qtd_mix, round(tot_area_mix, 2), "", round(tot_vgv_mix, 2)])
     linhas_qa.append([])
     linhas_qa.append(["FICHA DO TERRENO E QUADRO PROJETO"])
     linhas_qa.append(["Empreendimento", nome_empreendimento, "", "Área Terreno (m²)", entrada.area_terreno_m2])
@@ -806,7 +896,13 @@ def renderizar_estudo_completo_planilha(resultado: ResultadoTerreno) -> None:
         )
 
     chave_state_pavs = "viab_df_pavimentos"
-    col_b1, col_b2, col_b3, col_b4 = st.columns([1.1, 1.4, 1.2, 1.2], vertical_alignment="bottom")
+
+    def _definir_matriz(df_novo: pd.DataFrame) -> None:
+        """Troca a matriz e reinicia o editor (senão o data_editor reaplica edições antigas por índice)."""
+        st.session_state[chave_state_pavs] = df_novo
+        st.session_state["viab_versao_matriz"] = st.session_state.get("viab_versao_matriz", 0) + 1
+
+    col_b1, col_b4 = st.columns([1.0, 1.0], vertical_alignment="bottom")
     with col_b1:
         qtd_pav_tipo = st.number_input(
             "Nº de Pavimentos Tipo",
@@ -816,32 +912,6 @@ def renderizar_estudo_completo_planilha(resultado: ResultadoTerreno) -> None:
             step=1,
             key="viab_qtd_pav_tipo",
         )
-    with col_b2:
-        if st.button(
-            "Preencher automaticamente pelo potencial do terreno",
-            type="primary",
-            width="stretch",
-            key="btn_autopreencher_quadro",
-        ):
-            pavs_auto = distribuir_areas_automaticas_por_terreno(
-                indices=indices,
-                cota_terreno_m=cota_terreo_in,
-                qtd_pav_tipo=int(qtd_pav_tipo),
-                incluir_fachada_ativa=usar_fachada_ativa,
-                area_fachada_ativa_m2=float(area_fa_in) if usar_fachada_ativa else 0.0,
-                qtd_lojas_fa=int(qtd_lojas_fa_in) if usar_fachada_ativa else 0,
-            )
-            st.session_state[chave_state_pavs] = _df_pavimentos_para_edicao(pavs_auto)
-            st.rerun()
-    with col_b3:
-        if st.button("Zerar matriz de pavimentos (padrão planilha)", width="stretch", key="btn_zerar_quadro"):
-            pavs_zero = gerar_pavimentos_padrao(
-                cota_terreno_m=cota_terreo_in,
-                qtd_pavimentos_tipo=int(qtd_pav_tipo),
-                incluir_atico=True,
-            )
-            st.session_state[chave_state_pavs] = _df_pavimentos_para_edicao(pavs_zero)
-            st.rerun()
     with col_b4:
         area_perm_proj_in = st.number_input(
             "Área Permeável Projetada (U52 em m²)",
@@ -850,22 +920,150 @@ def renderizar_estudo_completo_planilha(resultado: ResultadoTerreno) -> None:
             step=1.0,
             key=f"viab_perm_proj_{indices.area_permeavel_min_m2}",
         )
+    qtd_pav_tipo = int(qtd_pav_tipo)
 
-    if chave_state_pavs not in st.session_state:
-        pavs_iniciais = distribuir_areas_automaticas_por_terreno(
+    # --- Etapa 5: unidades por pavimento e área de cada tipologia --------------------------
+    st.markdown("##### Etapa 5 — Quantas unidades por pavimento e a área de cada tipologia")
+    st.caption(
+        "Cada linha é uma tipologia: escolha a categoria, a área privativa de cada unidade e quantas "
+        "unidades entram por pavimento. Use “Do / Até pavimento” para variar a planta entre andares "
+        "(vazio em “Até” = até o último). A matriz da Etapa 6 é refeita automaticamente."
+    )
+    c_cc, c_cn, c_rest = st.columns([1, 1, 1.2], vertical_alignment="bottom")
+    pct_circ_comp = c_cc.number_input(
+        "Circulação computável (% da área privativa)", min_value=0.0, max_value=80.0,
+        value=PCT_CIRC_COMPUTAVEL_PADRAO * 100, step=1.0, key="viab_pct_circ_comp",
+    ) / 100.0
+    pct_circ_nao_comp = c_cn.number_input(
+        "Circulação não computável (% da área privativa)", min_value=0.0, max_value=80.0,
+        value=PCT_CIRC_NAO_COMPUTAVEL_PADRAO * 100, step=1.0, key="viab_pct_circ_nao_comp",
+    ) / 100.0
+    if c_rest.button("Sugerir tipologias pelo potencial do terreno", width="stretch", key="btn_tipologias_padrao"):
+        st.session_state.pop("viab_df_tipologias", None)
+
+    if "viab_df_tipologias" not in st.session_state:
+        sugeridas = tipologias_padrao(indices, qtd_pav_tipo, pct_circ_comp=pct_circ_comp, pct_circ_nao_comp=pct_circ_nao_comp)
+        st.session_state["viab_df_tipologias"] = _df_tipologias(sugeridas)
+        st.session_state["viab_versao_tipologias"] = st.session_state.get("viab_versao_tipologias", 0) + 1
+
+    df_tip = st.data_editor(
+        st.session_state["viab_df_tipologias"],
+        num_rows="dynamic",
+        width="stretch",
+        key=f"editor_tipologias_{st.session_state.get('viab_versao_tipologias', 0)}",
+        column_config={
+            "Categoria": st.column_config.SelectboxColumn(
+                "Categoria", options=list(CATEGORIAS_TIPOLOGIA), required=True, width="medium"
+            ),
+            "Tipologia": st.column_config.TextColumn("Tipologia", help="Ex.: STUDIO, 1 DORM, 2 DORM"),
+            "Área privativa (m²)": st.column_config.NumberColumn(
+                "Área privativa (m²)", min_value=10.0, max_value=500.0, step=0.5, format="%.2f", required=True
+            ),
+            "UH por pavimento": st.column_config.NumberColumn(
+                "UH por pavimento", min_value=0, max_value=80, step=1, format="%d", required=True
+            ),
+            "Do pavimento": st.column_config.NumberColumn(
+                "Do pavimento", min_value=1, max_value=qtd_pav_tipo, step=1, format="%d"
+            ),
+            "Até pavimento": st.column_config.NumberColumn(
+                "Até pavimento", min_value=1, max_value=qtd_pav_tipo, step=1, format="%d",
+                help="Vazio = até o último pavimento-tipo",
+            ),
+        },
+    )
+    tipologias = _tipologias_do_df(df_tip)
+    erros_tip = validar_tipologias(tipologias, qtd_pav_tipo)
+    for erro_t in erros_tip:
+        nota(erro_t, "warn")
+
+    limite_comp_pav, limite_laje_pav = limites_pavimento_tipo(indices, qtd_pav_tipo)
+    linhas_cap = []
+    for t in tipologias:
+        maximo = maximo_unidades_por_pavimento(
+            indices, qtd_pav_tipo, t.categoria, t.area_privativa_m2, pct_circ_comp, pct_circ_nao_comp
+        )
+        fim = t.pavimento_final or qtd_pav_tipo
+        n_pav = max(0, fim - t.pavimento_inicial + 1)
+        linhas_cap.append([
+            t.categoria,
+            t.nome or "—",
+            _fmt_num(t.area_privativa_m2, "m²"),
+            str(t.unidades_por_pavimento),
+            "—" if maximo is None else str(maximo),
+            f"{t.pavimento_inicial}º ao {fim}º ({n_pav})",
+            str(t.unidades_por_pavimento * n_pav),
+            _fmt_num(t.unidades_por_pavimento * n_pav * t.area_privativa_m2, "m²"),
+        ])
+    if linhas_cap:
+        tabela(
+            ["Categoria", "Tipologia", "Área/UH", "UH por pavimento", "Máx. por pavimento (só esta)",
+             "Pavimentos", "Total de UH", "Área privativa total"],
+            linhas_cap,
+        )
+    st.caption(
+        f"Por pavimento-tipo cabem até **{_fmt_num(limite_comp_pav, 'm²')} computáveis** "
+        f"(potencial do projeto ÷ {qtd_pav_tipo} pavimentos) e **{_fmt_num(limite_laje_pav, 'm²')} de laje** "
+        "(projeção máxima). “Máx. por pavimento” considera a circulação informada acima."
+    )
+
+    assinatura_fa_atual = (
+        usar_fachada_ativa,
+        int(qtd_lojas_fa_in) if usar_fachada_ativa else 0,
+        round(float(area_fa_in), 2) if usar_fachada_ativa else 0.0,
+    )
+
+    def _gerar_matriz_pelas_tipologias() -> pd.DataFrame:
+        base = distribuir_areas_automaticas_por_terreno(
             indices=indices,
             cota_terreno_m=cota_terreo_in,
-            qtd_pav_tipo=int(qtd_pav_tipo),
+            qtd_pav_tipo=qtd_pav_tipo,
             incluir_fachada_ativa=usar_fachada_ativa,
             area_fachada_ativa_m2=float(area_fa_in) if usar_fachada_ativa else 0.0,
             qtd_lojas_fa=int(qtd_lojas_fa_in) if usar_fachada_ativa else 0,
         )
-        st.session_state[chave_state_pavs] = _df_pavimentos_para_edicao(pavs_iniciais)
+        if not erros_tip:
+            base = aplicar_tipologias_aos_pavimentos(base, tipologias, pct_circ_comp, pct_circ_nao_comp)
+        st.session_state["viab_ultima_assinatura_fa"] = assinatura_fa_atual
+        return _df_pavimentos_para_edicao(base)
+
+    # --- Etapa 6: matriz pavimento a pavimento ------------------------------------------------
+    st.markdown("##### Etapa 6 — Matriz de áreas pavimento a pavimento")
+    col_m1, col_m2 = st.columns([1.4, 1.2], vertical_alignment="bottom")
+    with col_m1:
+        if st.button(
+            "Refazer a matriz pelas tipologias (descarta edições manuais)",
+            type="primary",
+            width="stretch",
+            key="btn_autopreencher_quadro",
+        ):
+            _definir_matriz(_gerar_matriz_pelas_tipologias())
+            st.rerun()
+    with col_m2:
+        if st.button("Zerar matriz de pavimentos (padrão planilha)", width="stretch", key="btn_zerar_quadro"):
+            pavs_zero = gerar_pavimentos_padrao(
+                cota_terreno_m=cota_terreo_in,
+                qtd_pavimentos_tipo=qtd_pav_tipo,
+                incluir_atico=True,
+            )
+            _definir_matriz(_df_pavimentos_para_edicao(pavs_zero))
+            st.rerun()
+
+    assinatura_tip = (
+        tuple((t.categoria, t.nome, t.area_privativa_m2, t.unidades_por_pavimento, t.pavimento_inicial, t.pavimento_final)
+              for t in tipologias),
+        qtd_pav_tipo,
+        round(pct_circ_comp, 4),
+        round(pct_circ_nao_comp, 4),
+    )
+    if chave_state_pavs not in st.session_state or (
+        not erros_tip and st.session_state.get("viab_tipologias_assinatura") != assinatura_tip
+    ):
+        st.session_state["viab_tipologias_assinatura"] = assinatura_tip
+        _definir_matriz(_gerar_matriz_pelas_tipologias())
 
     # Sincroniza imediatamente a seleção de Fachada Ativa (Sim / Não) com a linha do Térreo na matriz
-    assinatura_fa = (usar_fachada_ativa, int(qtd_lojas_fa_in) if usar_fachada_ativa else 0, round(float(area_fa_in), 2) if usar_fachada_ativa else 0.0)
-    if st.session_state.get("viab_ultima_assinatura_fa") != assinatura_fa:
-        st.session_state["viab_ultima_assinatura_fa"] = assinatura_fa
+    if st.session_state.get("viab_ultima_assinatura_fa") != assinatura_fa_atual:
+        st.session_state["viab_ultima_assinatura_fa"] = assinatura_fa_atual
         df_sync = st.session_state[chave_state_pavs].copy()
         if not df_sync.empty and "UH (NR1-3)" in df_sync.columns and "[N.Comp] (NR1-3) F.A." in df_sync.columns:
             if usar_fachada_ativa:
@@ -874,19 +1072,51 @@ def renderizar_estudo_completo_planilha(resultado: ResultadoTerreno) -> None:
             else:
                 df_sync["UH (NR1-3)"] = 0.0
                 df_sync["[N.Comp] (NR1-3) F.A."] = 0.0
-            st.session_state[chave_state_pavs] = df_sync
+            _definir_matriz(df_sync)
 
+    st.caption(
+        "A matriz acompanha as tipologias da Etapa 5. Você ainda pode ajustar qualquer célula; "
+        "as edições valem até a próxima mudança nas tipologias."
+    )
     df_editado = st.data_editor(
         st.session_state[chave_state_pavs],
         width="stretch",
         num_rows="dynamic",
-        key="editor_quadro_areas",
+        key=f"editor_quadro_areas_{st.session_state.get('viab_versao_matriz', 0)}",
     )
 
     pavs_atuais = _df_editado_para_pavimentos(
         df_editado,
-        gerar_pavimentos_padrao(cota_terreno_m=cota_terreo_in, qtd_pavimentos_tipo=len(df_editado)),
+        gerar_pavimentos_padrao(cota_terreno_m=cota_terreo_in, qtd_pavimentos_tipo=max(1, len(df_editado) - 2)),
     )
+
+    capacidade = calcular_capacidade_pavimentos(pavs_atuais, indices)
+    if capacidade:
+        fora = [c for c in capacidade if not c.atende]
+        if fora:
+            nota(
+                "Pavimento(s) acima do limite: "
+                + ", ".join(f"{c.nome} ({_fmt_num(c.area_construida_m2, 'm²')})" for c in fora)
+                + ". Reduza unidades ou áreas, ou aumente o nº de pavimentos.",
+                "warn",
+            )
+        with st.expander("Ocupação de cada pavimento-tipo (unidades × limites)", expanded=bool(fora)):
+            tabela(
+                ["Pavimento", "UH", "Privativa computável", "Privativa não computável",
+                 "Construída no pavimento", "Limite computável", "Limite da laje", "Status"],
+                [
+                    [
+                        c.nome, str(c.unidades),
+                        _fmt_num(c.area_privativa_computavel_m2, "m²"),
+                        _fmt_num(c.area_privativa_nao_computavel_m2, "m²"),
+                        _fmt_num(c.area_construida_m2, "m²"),
+                        _fmt_num(c.limite_computavel_m2, "m²"),
+                        _fmt_num(c.limite_laje_m2, "m²"),
+                        "✅ Cabe" if c.atende else "⚠️ Excede",
+                    ]
+                    for c in capacidade
+                ],
+            )
     quadro = calcular_quadro_areas(
         pavimentos=pavs_atuais,
         indices=indices,
@@ -966,21 +1196,30 @@ def renderizar_estudo_completo_planilha(resultado: ResultadoTerreno) -> None:
     col_mix, col_chk = st.columns([1.3, 1.1], gap="large")
     with col_mix:
         st.markdown("**Mix de Tipologias e Preço/m²**")
+        st.caption("Quantidades vindas das tipologias da Etapa 5 (UH por pavimento × nº de pavimentos). Ajuste os preços.")
+        precos_padrao = {"HIS-1": 6500.0, "HIS-2": 6800.0, "R2V-1": 7000.0, "NR1-12": 11000.0}
+        linhas_mix = []
+        for t in tipologias:
+            fim_t = t.pavimento_final or qtd_pav_tipo
+            qtd_t = t.unidades_por_pavimento * max(0, fim_t - t.pavimento_inicial + 1)
+            if qtd_t <= 0:
+                continue
+            linhas_mix.append({
+                "Categoria": t.categoria,
+                "Tipologia": t.nome or "—",
+                "Área (m²)": float(t.area_privativa_m2),
+                "Quantidade": int(qtd_t),
+                "Preço/m² (R$)": precos_padrao.get(t.categoria.split(" ")[0], 7000.0),
+            })
         df_mix_padrao = pd.DataFrame(
-            [
-                {"Categoria": "HIS-1", "Tipologia": "STUDIO", "Área (m²)": 24.57, "Quantidade": 24, "Preço/m² (R$)": 6500.0},
-                {"Categoria": "HIS-1", "Tipologia": "1 DORM", "Área (m²)": 24.47, "Quantidade": 22, "Preço/m² (R$)": 6500.0},
-                {"Categoria": "HIS-1", "Tipologia": "1 DORM + OFFICE", "Área (m²)": 27.00, "Quantidade": 6, "Preço/m² (R$)": 6500.0},
-                {"Categoria": "HIS-2", "Tipologia": "STUDIO", "Área (m²)": 24.57, "Quantidade": 47, "Preço/m² (R$)": 6800.0},
-                {"Categoria": "HIS-2", "Tipologia": "1 DORM", "Área (m²)": 24.47, "Quantidade": 49, "Preço/m² (R$)": 6800.0},
-                {"Categoria": "HIS-2", "Tipologia": "1 DORM + OFFICE", "Área (m²)": 27.00, "Quantidade": 12, "Preço/m² (R$)": 6800.0},
-                {"Categoria": "R2V-1", "Tipologia": "STUDIO", "Área (m²)": 17.78, "Quantidade": 74, "Preço/m² (R$)": 7000.0},
-                {"Categoria": "R2V-1", "Tipologia": "STUDIO 24m²", "Área (m²)": 24.57, "Quantidade": 3, "Preço/m² (R$)": 7000.0},
-                {"Categoria": "R2V-1", "Tipologia": "1 DORM", "Área (m²)": 24.47, "Quantidade": 3, "Preço/m² (R$)": 7000.0},
-                {"Categoria": "R2V-1", "Tipologia": "1 DORM + OFFICE", "Área (m²)": 27.00, "Quantidade": 1, "Preço/m² (R$)": 7000.0},
-            ]
+            linhas_mix, columns=["Categoria", "Tipologia", "Área (m²)", "Quantidade", "Preço/m² (R$)"]
         )
-        df_mix_edit = st.data_editor(df_mix_padrao, width="stretch", num_rows="dynamic", key="editor_mix_tipologias")
+        df_mix_edit = st.data_editor(
+            df_mix_padrao,
+            width="stretch",
+            num_rows="dynamic",
+            key=f"editor_mix_tipologias_{abs(hash(assinatura_tip)) % 10**8}",
+        )
         tot_unid_mix = int(df_mix_edit["Quantidade"].fillna(0).sum())
         area_priv_mix = float((df_mix_edit["Área (m²)"].fillna(0) * df_mix_edit["Quantidade"].fillna(0)).sum())
         vgv_estimado = float(

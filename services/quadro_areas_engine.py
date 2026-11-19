@@ -5,21 +5,25 @@ Motor de Cálculo das Etapas 6, 7 e 8:
 - Etapa 8: Anexos (`Q. ANEXOS`: Reservatório de Reúso, Reservatório de Retardo, Acessibilidade, Vagas e Uso Incentivado)
 """
 
+import copy
 import math
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from domain.viabilidade_models import (
+    CATEGORIAS_TIPOLOGIA,
     COLUNAS_COMPUTAVEIS,
     COLUNAS_NAO_COMPUTAVEIS,
     COLUNAS_UNIDADES,
     TODAS_COLUNAS_AREA,
     TODAS_COLUNAS_UNIDADE,
+    CapacidadePavimento,
     IndicesLegais,
     LinhaLimite,
     LinhaQuadro,
     Pavimento,
     QuadroAreas,
     ResultadoAnexos,
+    TipologiaPavimento,
 )
 
 
@@ -159,6 +163,169 @@ def distribuir_areas_automaticas_por_terreno(
             p.areas["nc_circ"] = round(indices.area_terreno_m2 * 0.04, 2)
 
     return pavs
+
+
+# ---------------------------------------------------------------------------
+# Etapas 5/6 — Tipologias por pavimento-tipo (unidades e área de cada tipologia)
+# ---------------------------------------------------------------------------
+
+# Circulação como fração da área privativa do pavimento. 0,14 ≈ os 12% do pavimento usados no
+# preenchimento automático (0,12 / 0,88); 0,20 ≈ os 18% não computáveis (0,18 / 0,88).
+PCT_CIRC_COMPUTAVEL_PADRAO = 0.14
+PCT_CIRC_NAO_COMPUTAVEL_PADRAO = 0.20
+
+_COLS_COMPUTAVEIS = [c for c, _ in COLUNAS_COMPUTAVEIS]
+_COLS_NAO_COMPUTAVEIS = [c for c, _ in COLUNAS_NAO_COMPUTAVEIS]
+
+
+def limites_pavimento_tipo(indices: IndicesLegais, qtd_pav_tipo: int) -> Tuple[Optional[float], Optional[float]]:
+    """
+    (área computável disponível por pavimento-tipo, área máxima da laje).
+    Computável: potencial do projeto (T46) dividido igualmente pelos pavimentos-tipo.
+    Laje: projeção máxima (T.O. × terreno, D43) — nenhum pavimento ocupa mais que a projeção.
+    """
+    n = max(1, int(qtd_pav_tipo))
+    comp = indices.area_comp_projeto_m2
+    limite_comp = round(comp / n, 2) if comp else None
+    limite_laje = round(indices.area_ocupacao_max_m2, 2) if indices.area_ocupacao_max_m2 else None
+    return limite_comp, limite_laje
+
+
+def maximo_unidades_por_pavimento(
+    indices: IndicesLegais,
+    qtd_pav_tipo: int,
+    categoria: str,
+    area_privativa_m2: float,
+    pct_circ_comp: float = PCT_CIRC_COMPUTAVEL_PADRAO,
+    pct_circ_nao_comp: float = PCT_CIRC_NAO_COMPUTAVEL_PADRAO,
+) -> Optional[int]:
+    """Quantas unidades desta tipologia cabem em um pavimento-tipo, se ela fosse a única do andar."""
+    if area_privativa_m2 <= 0 or categoria not in CATEGORIAS_TIPOLOGIA:
+        return None
+    computavel = CATEGORIAS_TIPOLOGIA[categoria][2]
+    limite_comp, limite_laje = limites_pavimento_tipo(indices, qtd_pav_tipo)
+    candidatos = []
+    if limite_laje:
+        candidatos.append(limite_laje / (1.0 + pct_circ_comp + pct_circ_nao_comp))
+    if computavel and limite_comp:
+        candidatos.append(limite_comp / (1.0 + pct_circ_comp))
+    if not candidatos:
+        return None
+    return max(0, int(math.floor(min(candidatos) / area_privativa_m2 + 1e-9)))
+
+
+def tipologias_padrao(
+    indices: IndicesLegais,
+    qtd_pav_tipo: int,
+    area_his2_m2: float = 25.0,
+    area_r2v1_m2: float = 25.0,
+    pct_circ_comp: float = PCT_CIRC_COMPUTAVEL_PADRAO,
+    pct_circ_nao_comp: float = PCT_CIRC_NAO_COMPUTAVEL_PADRAO,
+) -> List[TipologiaPavimento]:
+    """
+    Sugestão inicial: HIS-2 e R2V-1 na proporção exigida (80/20, ou 60/40 em EZEIS), com a
+    quantidade por pavimento que cabe no potencial e na laje. O usuário edita depois.
+    """
+    limite_comp, limite_laje = limites_pavimento_tipo(indices, qtd_pav_tipo)
+    priv = []
+    if limite_comp:
+        priv.append(limite_comp / (1.0 + pct_circ_comp))
+    if limite_laje:
+        priv.append(limite_laje / (1.0 + pct_circ_comp + pct_circ_nao_comp))
+    priv_max = min(priv) if priv else 0.0
+    prop = indices.proporcao_his
+    uh_his2 = max(1, int(math.floor(priv_max * prop / area_his2_m2)))
+    uh_r2v1 = max(0, int(math.floor(priv_max * (1.0 - prop) / area_r2v1_m2)))
+    lista = [TipologiaPavimento("HIS-2", "STUDIO", area_his2_m2, uh_his2)]
+    if uh_r2v1:
+        lista.append(TipologiaPavimento("R2V-1", "STUDIO", area_r2v1_m2, uh_r2v1))
+    return lista
+
+
+def validar_tipologias(tipologias: List[TipologiaPavimento], qtd_pav_tipo: int) -> List[str]:
+    """Mensagens de erro de preenchimento (lista vazia = tudo certo)."""
+    erros = []
+    for i, t in enumerate(tipologias, start=1):
+        rot = f"Linha {i} ({t.nome or t.categoria})"
+        if t.categoria not in CATEGORIAS_TIPOLOGIA:
+            erros.append(f"{rot}: categoria '{t.categoria}' inválida.")
+        if t.area_privativa_m2 <= 0:
+            erros.append(f"{rot}: a área privativa precisa ser maior que zero.")
+        if t.unidades_por_pavimento < 0:
+            erros.append(f"{rot}: a quantidade de unidades não pode ser negativa.")
+        fim = t.pavimento_final or qtd_pav_tipo
+        if not (1 <= t.pavimento_inicial <= fim <= qtd_pav_tipo):
+            erros.append(
+                f"{rot}: faixa de pavimentos {t.pavimento_inicial}–{fim} fora de 1–{qtd_pav_tipo}."
+            )
+    return erros
+
+
+def aplicar_tipologias_aos_pavimentos(
+    pavimentos: List[Pavimento],
+    tipologias: List[TipologiaPavimento],
+    pct_circ_comp: float = PCT_CIRC_COMPUTAVEL_PADRAO,
+    pct_circ_nao_comp: float = PCT_CIRC_NAO_COMPUTAVEL_PADRAO,
+) -> List[Pavimento]:
+    """
+    Preenche os pavimentos-tipo com as unidades e áreas privativas de cada tipologia
+    (UH × área, na coluna da categoria) e a circulação proporcional à área privativa.
+    Térreo, ático e demais colunas (terraço, E.C.C. etc.) ficam como estavam.
+    Devolve uma nova lista; a original não é alterada.
+    """
+    novos = copy.deepcopy(pavimentos)
+    tipos = [p for p in novos if p.tipo == "tipo"]
+    for numero, pav in enumerate(tipos, start=1):
+        for col_u, col_a, _ in CATEGORIAS_TIPOLOGIA.values():
+            pav.unidades[col_u] = 0.0
+            pav.areas[col_a] = 0.0
+        privativa = 0.0
+        for t in tipologias:
+            fim = t.pavimento_final or len(tipos)
+            if not (t.pavimento_inicial <= numero <= fim) or t.categoria not in CATEGORIAS_TIPOLOGIA:
+                continue
+            col_u, col_a, _ = CATEGORIAS_TIPOLOGIA[t.categoria]
+            qtd = max(0, int(t.unidades_por_pavimento))
+            pav.unidades[col_u] = pav.unidades.get(col_u, 0.0) + qtd
+            pav.areas[col_a] = round(pav.areas.get(col_a, 0.0) + qtd * float(t.area_privativa_m2), 2)
+            privativa += qtd * float(t.area_privativa_m2)
+        pav.areas["c_circ"] = round(privativa * pct_circ_comp, 2)
+        pav.areas["nc_circ"] = round(privativa * pct_circ_nao_comp, 2)
+    return novos
+
+
+def calcular_capacidade_pavimentos(
+    pavimentos: List[Pavimento], indices: IndicesLegais
+) -> List[CapacidadePavimento]:
+    """
+    Para cada pavimento-tipo da matriz (inclusive com edições manuais): unidades, áreas ocupadas
+    e se cabe no potencial por pavimento e na laje (projeção máxima).
+    """
+    tipos = [p for p in pavimentos if p.tipo == "tipo"]
+    limite_comp, limite_laje = limites_pavimento_tipo(indices, len(tipos))
+    cols_priv_comp = [a for _, a, comp in CATEGORIAS_TIPOLOGIA.values() if comp]
+    cols_priv_nc = [a for _, a, comp in CATEGORIAS_TIPOLOGIA.values() if not comp]
+    resultado = []
+    for numero, p in enumerate(tipos, start=1):
+        comp = sum(float(p.areas.get(c, 0.0) or 0.0) for c in _COLS_COMPUTAVEIS)
+        construida = comp + sum(float(p.areas.get(c, 0.0) or 0.0) for c in _COLS_NAO_COMPUTAVEIS)
+        atende = (limite_comp is None or comp <= limite_comp + 0.01) and (
+            limite_laje is None or construida <= limite_laje + 0.01
+        )
+        resultado.append(
+            CapacidadePavimento(
+                numero=numero,
+                nome=p.nome,
+                unidades=int(round(sum(float(p.unidades.get(u, 0.0) or 0.0) for u, _, _ in CATEGORIAS_TIPOLOGIA.values()))),
+                area_privativa_computavel_m2=round(sum(float(p.areas.get(c, 0.0) or 0.0) for c in cols_priv_comp), 2),
+                area_privativa_nao_computavel_m2=round(sum(float(p.areas.get(c, 0.0) or 0.0) for c in cols_priv_nc), 2),
+                area_construida_m2=round(construida, 2),
+                limite_computavel_m2=limite_comp,
+                limite_laje_m2=limite_laje,
+                atende=atende,
+            )
+        )
+    return resultado
 
 
 def calcular_quadro_areas(

@@ -44,7 +44,7 @@ LAYER_CANDIDATES = {
         "geoportal:patrimonio_cultural_area_envoltoria_CONDEPHAAT",
         "geoportal:patrimonio_cultural_area_envoltoria_IPHAN",
     ],
-    # Nomes NÃO confirmados: o cliente também procura automaticamente no GetCapabilities
+    # Demais nomes NÃO confirmados: o cliente também procura automaticamente no GetCapabilities
     # usando as palavras-chave de LAYER_KEYWORDS abaixo.
     "macrozona": [
         "geoportal:macrozona",
@@ -53,12 +53,14 @@ LAYER_CANDIDATES = {
         "geoportal:mapa_01_macrozona",
     ],
     "macroarea": [
+        "geoportal:pde_macroarea_lei_18209",  # confirmada em 19/11/2026 (PDE revisado, Lei 18.209/24)
         "geoportal:macroarea",
         "geoportal:pde_macroarea",
         "geoportal:macroarea_pde",
         "geoportal:mapa_02_macroarea",
     ],
     "qualificacao_ambiental": [
+        "geoportal:zoneamento_2016_map3",  # confirmada em 19/11/2026 (campo tx_zoneamento_perimetro = "PA 5")
         "geoportal:perimetro_qualificacao_ambiental",
         "geoportal:qualificacao_ambiental",
         "geoportal:quota_ambiental",
@@ -84,7 +86,7 @@ LAYER_KEYWORDS = {
 }
 
 # Camadas com estes termos no nome são ignoradas (legislação revogada / antiga)
-LAYER_EXCLUDE_TERMS = ["revogad", "13885", "13430", "2002", "2004"]
+LAYER_EXCLUDE_TERMS = ["revogad", "13885", "13430", "2002", "2004", "_aiu"]  # _aiu: Áreas de Intervenção Urbana (não são PA)
 
 # Possíveis nomes de colunas para Setor, Quadra e Lote no WFS do GeoSampa
 SQL_FIELD_VARIATIONS = [

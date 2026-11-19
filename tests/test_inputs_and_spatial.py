@@ -10,12 +10,15 @@ Execute com:
 import unittest
 from unittest.mock import MagicMock
 
+import requests
 from pyproj import Transformer
+from shapely.geometry import shape
 
 from config import CRS_UTM_SP, CRS_WGS84
 from services.geocoder import geocodificar_endereco_sp, validar_endereco_input
 from services.geosampa_client import (
     LOTES_EXEMPLO_SP,
+    LOTES_VIZINHOS_DEMO_UTM,
     GeoSampaWFSClient,
     buscar_lote_local_por_ponto_utm,
     criar_feicao_referencia_coordenada,
@@ -27,12 +30,17 @@ from services.geosampa_client import (
 from services.spatial_analyzer import (
     alternar_lote_na_selecao,
     consultar_enquadramento_pelo_ponto_do_lote,
+    encontrar_feicao_no_ponto,
     processar_terreno_completo,
 )
 from ui.dashboard_cards import gerar_dataframe_unitario_vs_unificado
 from ui.map_component import construir_mapa_terreno
 
 _UTM_TO_WGS84 = Transformer.from_crs(CRS_UTM_SP, CRS_WGS84, always_xy=True)
+
+# Exemplos com lotes reais (domain/lotes_exemplo.py)
+EX_VM_1_LOTE = "Vila Mariana · R. Dr. Pinto Ferraz, 291 · 1 lote"
+EX_PINHEIROS = "Pinheiros · R. Teodoro Sampaio, 2363 a 2377 · 3 lotes unificados"
 
 
 class TestSQLInputs(unittest.TestCase):
@@ -160,23 +168,31 @@ class TestCliqueMapaEConsultaPeloPonto(unittest.TestCase):
     """Testes para o clique interativo no terreno e 2ª consulta espacial pelo ponto geográfico."""
 
     def test_clique_no_terreno_retorna_lote_correto(self) -> None:
-        # Ponto no interior do lote 083.112.0022 (Pinheiros: X entre 328120 e 328130, Y entre 7392815 e 7392850)
-        x_utm, y_utm = 328125.0, 7392830.0
+        # Ponto no interior do lote real 015.045.0006 (Pinheiros, exemplo de 3 lotes)
+        lote_alvo = next(
+            f for f in LOTES_EXEMPLO_SP[EX_PINHEIROS]["features_utm"] if f["properties"]["cd_lote"] == "0006"
+        )
+        x_utm, y_utm = shape(lote_alvo["geometry"]).representative_point().coords[0]
         lote_local = buscar_lote_local_por_ponto_utm(x_utm, y_utm)
         self.assertIsNotNone(lote_local)
-        self.assertEqual(lote_local["properties"]["cd_lote"], "0022")
+        self.assertEqual(lote_local["properties"]["cd_lote"], "0006")
 
-        # Testando via GeoSampaWFSClient.consultar_lote_por_coordenada (com sessão sem rede -> usa fallback local)
+        # GeoSampaWFSClient.consultar_lote_por_coordenada com servidor offline -> usa fallback local
         lon, lat = _UTM_TO_WGS84.transform(x_utm, y_utm)
         client = GeoSampaWFSClient()
-        client._request_wfs = MagicMock(return_value=None)  # simula servidor offline
+        client._request_wfs = MagicMock(return_value=None)  # simula WFS offline
+        client.session.get = MagicMock(side_effect=requests.RequestException("offline"))  # e WMS offline
         feats, erro = client.consultar_lote_por_coordenada(lat, lon)
         self.assertIsNone(erro)
         self.assertEqual(len(feats), 1)
-        self.assertEqual(feats[0]["properties"]["cd_lote"], "0022")
+        self.assertEqual(feats[0]["properties"]["cd_lote"], "0006")
+
+        # Mesmo lote encontrado sem rede entre as feições já carregadas no mapa
+        achado = encontrar_feicao_no_ponto(LOTES_EXEMPLO_SP[EX_PINHEIROS]["features_utm"], lat, lon)
+        self.assertEqual(achado["properties"]["cd_lote"], "0006")
 
     def test_segunda_consulta_pelo_ponto_geografico_do_lote(self) -> None:
-        exemplo = LOTES_EXEMPLO_SP["Av. Paulista (Bela Vista) - ZEU (Lote Comercial)"]
+        exemplo = LOTES_EXEMPLO_SP[EX_VM_1_LOTE]
         resultado = processar_terreno_completo(features_lotes=exemplo["features_utm"])
 
         # Simula o GeoSampa respondendo à 2ª consulta pelo ponto geográfico do lote
@@ -210,7 +226,7 @@ class TestCliqueMapaEConsultaPeloPonto(unittest.TestCase):
         self.assertEqual(atualizado.macrozona.ponto_utm, atualizado.ponto_utm)
 
     def test_mapa_interativo_renderiza_popup_e_ponto_clicado(self) -> None:
-        exemplo = LOTES_EXEMPLO_SP["Pinheiros (Unificação de 3 Lotes Contíguos) - ZEU"]
+        exemplo = LOTES_EXEMPLO_SP[EX_PINHEIROS]
         resultado = processar_terreno_completo(
             features_lotes=exemplo["features_utm"],
             zona_forcada="ZEU",
@@ -226,7 +242,7 @@ class TestCliqueMapaEConsultaPeloPonto(unittest.TestCase):
         )
         html = mapa.get_root().render()
         self.assertIn("Ficha do Terreno Selecionado", html)
-        self.assertIn("083.112.0021", html)
+        self.assertIn("015.045.0005", html)
         self.assertIn("Ponto clicado:", html)
         self.assertIn("Macrozona:", html)
         self.assertIn("Qualificação ambiental:", html)
@@ -241,16 +257,19 @@ class TestCliqueMapaEConsultaPeloPonto(unittest.TestCase):
         self.assertAlmostEqual(res.area_total_m2, 250.0, places=1)
 
     def test_selecao_multiplos_lotes_no_mapa_e_tabela_unitario_vs_unificado(self) -> None:
-        # Inicia com 1 lote na Av. Paulista (009.074.0015)
-        exemplo = LOTES_EXEMPLO_SP["Av. Paulista (Bela Vista) - ZEU (Lote Comercial)"]
+        # Inicia com 1 lote real na Vila Mariana (039.079.0071)
+        exemplo = LOTES_EXEMPLO_SP[EX_VM_1_LOTE]
         res_1 = processar_terreno_completo(features_lotes=exemplo["features_utm"], zona_forcada="ZEU")
         self.assertFalse(res_1.unificado)
         self.assertEqual(len(res_1.lotes), 1)
 
-        # Clica no lote vizinho contíguo 009.074.0016 (X=331005, Y=7393360)
-        vizinho = buscar_lote_local_por_ponto_utm(331005.0, 7393360.0)
+        # Clica no lote vizinho contíguo 039.079.0072 (vizinho real gravado para o modo offline)
+        viz = next(f for f in LOTES_VIZINHOS_DEMO_UTM if f["properties"]["cd_lote"] == "0072"
+                   and f["properties"]["cd_quadra_fiscal"] == "079")
+        x_v, y_v = shape(viz["geometry"]).representative_point().coords[0]
+        vizinho = buscar_lote_local_por_ponto_utm(x_v, y_v)
         self.assertIsNotNone(vizinho)
-        self.assertEqual(vizinho["properties"]["cd_lote"], "0016")
+        self.assertEqual(vizinho["properties"]["cd_lote"], "0072")
 
         # 1º clique no vizinho -> adiciona à seleção (2 lotes)
         feats_2, acao_add = alternar_lote_na_selecao(res_1.lotes, [vizinho])
@@ -269,9 +288,9 @@ class TestCliqueMapaEConsultaPeloPonto(unittest.TestCase):
         # Gera a tabela comparativa Unitário vs. Unificado
         df = gerar_dataframe_unitario_vs_unificado(res_2)
         self.assertEqual(len(df), 3)  # Unitário #1, Unitário #2 e UNIFICADO (2 lotes)
-        self.assertEqual(df.iloc[0]["SQL"], "009.074.0015")
-        self.assertEqual(df.iloc[1]["SQL"], "009.074.0016")
-        self.assertEqual(df.iloc[2]["SQL"], "009.074.0015 + 009.074.0016")
+        self.assertEqual(df.iloc[0]["SQL"], "039.079.0071")
+        self.assertEqual(df.iloc[1]["SQL"], "039.079.0072")
+        self.assertEqual(df.iloc[2]["SQL"], "039.079.0071 + 039.079.0072")
         self.assertAlmostEqual(
             float(df.iloc[0]["Potencial_Maximo_m2"]) + float(df.iloc[1]["Potencial_Maximo_m2"]),
             float(df.iloc[2]["Potencial_Maximo_m2"]),

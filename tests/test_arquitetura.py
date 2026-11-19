@@ -19,7 +19,9 @@ PROIBIDOS_POR_CAMADA = {
 # Funções públicas usadas entre camadas e os parâmetros que os chamadores usam.
 CONTRATOS = {
     "services.spatial_analyzer": {
-        "processar_terreno_completo": ["features_lotes", "client", "endereco_referencia", "zona_forcada"],
+        "processar_terreno_completo": ["features_lotes", "client", "endereco_referencia", "zona_forcada", "progresso"],
+        "encontrar_feicao_no_ponto": ["features", "lat", "lon"],
+        "bbox_utm_com_margem": ["resultado"],
         "alternar_lote_na_selecao": ["lotes_atuais", "novas_features"],
         "consultar_enquadramento_pelo_ponto_do_lote": ["resultado", "client"],
     },
@@ -33,6 +35,12 @@ CONTRATOS = {
         "calcular_quadro_areas": ["pavimentos", "indices", "cota_terreno_m"],
         "calcular_quadro_luops": ["indices", "quadro_areas"],
         "calcular_anexos": ["indices", "quadro_areas"],
+        "tipologias_padrao": ["indices", "qtd_pav_tipo"],
+        "validar_tipologias": ["tipologias", "qtd_pav_tipo"],
+        "aplicar_tipologias_aos_pavimentos": ["pavimentos", "tipologias", "pct_circ_comp", "pct_circ_nao_comp"],
+        "limites_pavimento_tipo": ["indices", "qtd_pav_tipo"],
+        "maximo_unidades_por_pavimento": ["indices", "qtd_pav_tipo", "categoria", "area_privativa_m2"],
+        "calcular_capacidade_pavimentos": ["pavimentos", "indices"],
     },
     "services.agua_elevador_engine": {
         "calcular_agua_e_populacao": ["pavimentos_pop"],
@@ -46,7 +54,7 @@ CONTRATOS = {
     "services.eletrica_engine": {"calcular_previa_eletrica": ["quadro"]},
     "services.aproveitamento": {"calcular_aproveitamento": ["ent"]},
     "services.payback": {"calcular_payback": ["e"], "sensibilidade_payback": ["e"]},
-    "services.excel_exporter": {"gerar_xlsx_bytes": ["abas"]},
+    "services.excel_exporter": {"gerar_xlsx_bytes": ["abas"], "familia_tipologia": ["texto"]},
     "services.geocoder": {"geocodificar_endereco_sp": ["endereco_ou_cep"]},
     "domain.zoning_rules": {"obter_parametros_zoneamento": ["sigla_bruta"]},
 }

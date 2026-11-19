@@ -26,6 +26,7 @@ from config import (
     REQUEST_TIMEOUT,
     SQL_FIELD_VARIATIONS,
 )
+from domain.lotes_exemplo import LOTES_EXEMPLO_SP, LOTES_VIZINHOS_DEMO_UTM  # noqa: F401 (reexportados)
 
 # Desabilita avisos de certificado SSL caso o servidor da prefeitura apresente cadeia incompleta
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -153,6 +154,14 @@ class GeoSampaWFSClient:
         self._active_wms_url: str = GEOSAMPA_WMS_URLS[0]
         self._camadas_servidor: Optional[List[str]] = None
         self._catalogo_servidor: Optional[List[Dict[str, str]]] = None
+        # Camada que já respondeu para cada tema: é tentada primeiro nas próximas consultas
+        self._camada_preferida: Dict[str, str] = {}
+        # Camadas que o servidor recusou ("Feature type ... unknown"), separadas por serviço:
+        # algumas só existem no WMS (ex.: zoneamento_2016_map3, que fornece o PA). Uma camada só sai
+        # da lista quando WFS e WMS a recusam. O GetCapabilities não lista todas as camadas
+        # consultáveis, por isso a exclusão é feita pela resposta do servidor, não pelo catálogo.
+        self._inexistentes_wfs: set = set()
+        self._inexistentes_wms: set = set()
 
     @staticmethod
     def _sem_acento(texto: str) -> str:
@@ -227,10 +236,12 @@ class GeoSampaWFSClient:
                     encontradas_titulo.append(nome)
 
         fixas = LAYER_CANDIDATES.get(tema, [])
-        servidor = set(self._camadas_servidor or [])
-        fixas_existentes = [c for c in fixas if servidor and c in servidor]
-        fixas_restantes = [c for c in fixas if c not in fixas_existentes]
-        return list(dict.fromkeys(encontradas_nome + fixas_existentes + encontradas_titulo + fixas_restantes))
+        preferida = [self._camada_preferida[tema]] if tema in self._camada_preferida else []
+        # Ordem: a que já respondeu > nomes configurados (confirmados no topo de config.py) >
+        # camadas achadas por palavra-chave no catálogo. Camadas recusadas pelo servidor saem da lista.
+        ordem = preferida + fixas + encontradas_nome + encontradas_titulo
+        ordem = [c for c in ordem if not (c in self._inexistentes_wfs and c in self._inexistentes_wms)]
+        return list(dict.fromkeys(ordem))
 
     def consultar_camada_no_ponto(self, tema: str, x_utm: float, y_utm: float) -> Tuple[List[Dict[str, Any]], Optional[str]]:
         """
@@ -246,6 +257,13 @@ class GeoSampaWFSClient:
         bbox_simples = f"{x_utm - d:.2f},{y_utm - d:.2f},{x_utm + d:.2f},{y_utm + d:.2f}"
 
         for layer in candidatas:
+            if layer in self._inexistentes_wfs:
+                feats_wms = self._consultar_wms_feature_info_no_ponto(layer, x_utm, y_utm)
+                if feats_wms:
+                    self._camada_preferida[tema] = layer
+                    return feats_wms, layer
+                continue
+
             # Tentativa 1: BBOX OGC nativo no WFS 1.0.0 (não depende do nome da coluna de geometria)
             for bbox_val in (bbox_simples, bbox_nativo):
                 params_bbox = {
@@ -259,43 +277,56 @@ class GeoSampaWFSClient:
                     "maxFeatures": "5",
                 }
                 resp = self._request_wfs(params_bbox, timeout=10)
+                if resp is not None and "ServiceException" in resp.text[:600]:
+                    self._inexistentes_wfs.add(layer)
+                    break
                 if resp:
                     try:
                         feats = resp.json().get("features", [])
                         if feats:
+                            self._camada_preferida[tema] = layer
                             return feats, layer
                     except ValueError:
                         pass
 
-            # Tentativa 2: CQL_FILTER INTERSECTS com a coluna geométrica descoberta via DescribeFeatureType
-            schema = self.descobrir_schema_camada(layer)
-            colunas_geom = [schema["geom_col"]] if schema else ["geometria", "geom", "the_geom"]
-            for geom_col in colunas_geom:
-                params_cql = {
-                    "service": "WFS",
-                    "version": "1.0.0",
-                    "request": "GetFeature",
-                    "typeName": layer,
-                    "outputFormat": "application/json",
-                    "CQL_FILTER": f"INTERSECTS({geom_col}, POINT({x_utm:.2f} {y_utm:.2f}))",
-                    "srsName": CRS_UTM_SP,
-                    "maxFeatures": "5",
-                }
-                resp = self._request_wfs(params_cql, timeout=10)
-                if resp:
-                    try:
-                        feats = resp.json().get("features", [])
-                        if feats:
-                            return feats, layer
-                    except ValueError:
-                        pass
+            if layer not in self._inexistentes_wfs:
+                feats_cql = self._consultar_wfs_cql_no_ponto(layer, x_utm, y_utm)
+                if feats_cql:
+                    self._camada_preferida[tema] = layer
+                    return feats_cql, layer
 
             # Tentativa 3: WMS GetFeatureInfo no ponto geográfico do lote
             feats_wms = self._consultar_wms_feature_info_no_ponto(layer, x_utm, y_utm)
             if feats_wms:
+                self._camada_preferida[tema] = layer
                 return feats_wms, layer
 
         return [], None
+
+    def _consultar_wfs_cql_no_ponto(self, layer: str, x_utm: float, y_utm: float) -> List[Dict[str, Any]]:
+        """WFS GetFeature com CQL_FILTER INTERSECTS(coluna geométrica descoberta, POINT(x y))."""
+        schema = self.descobrir_schema_camada(layer)
+        colunas_geom = [schema["geom_col"]] if schema else ["geometria", "geom", "the_geom"]
+        for geom_col in colunas_geom:
+            params_cql = {
+                "service": "WFS",
+                "version": "1.0.0",
+                "request": "GetFeature",
+                "typeName": layer,
+                "outputFormat": "application/json",
+                "CQL_FILTER": f"INTERSECTS({geom_col}, POINT({x_utm:.2f} {y_utm:.2f}))",
+                "srsName": CRS_UTM_SP,
+                "maxFeatures": "5",
+            }
+            resp = self._request_wfs(params_cql, timeout=10)
+            if resp:
+                try:
+                    feats = resp.json().get("features", [])
+                    if feats:
+                        return feats
+                except ValueError:
+                    pass
+        return []
 
     def _consultar_wms_feature_info_no_ponto(
         self, layer: str, x_utm: float, y_utm: float
@@ -321,6 +352,9 @@ class GeoSampaWFSClient:
         for url in urls_to_try:
             try:
                 resp = self.session.get(url, params=params, timeout=8, verify=False)
+                if resp.status_code == 200 and "ServiceException" in resp.text[:600]:
+                    self._inexistentes_wms.add(layer)  # camada não publicada no WMS
+                    return []
                 if resp.status_code == 200:
                     self._active_wms_url = url
                     feats = resp.json().get("features", [])
@@ -639,151 +673,7 @@ class GeoSampaWFSClient:
         return []
 
 
-# Exemplos pré-carregados de lotes reais em São Paulo (para testes rápidos / modo demonstração offline)
-LOTES_EXEMPLO_SP: Dict[str, Dict[str, Any]] = {
-    "Av. Paulista (Bela Vista) - ZEU (Lote Comercial)": {
-        "sql": ("009", "074", "0015"),
-        "endereco": "Av. Paulista, Bela Vista - São Paulo/SP",
-        "zona": "ZEU",
-        "macrozona": "Macrozona de Estruturação e Qualificação Urbana",
-        "macroarea": "Macroárea de Urbanização Consolidada (MUC)",
-        "qualificacao_ambiental": "PA 5 (Perímetro de Qualificação Ambiental 5 — Quota Ambiental)",
-        "cota_min": 816.0,
-        "cota_max": 818.0,
-        "features_utm": [
-            {
-                "type": "Feature",
-                "properties": {
-                    "cd_setor_fiscal": "009",
-                    "cd_quadra_fiscal": "074",
-                    "cd_lote": "0015",
-                    "nm_logradouro": "AV PAULISTA",
-                    "cd_zona": "ZEU",
-                },
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [
-                        [
-                            [330980.0, 7393410.0],
-                            [331008.0, 7393392.0],
-                            [330978.0, 7393345.0],
-                            [330950.0, 7393363.0],
-                            [330980.0, 7393410.0],
-                        ]
-                    ],
-                },
-            }
-        ],
-    },
-    "Pinheiros (Unificação de 3 Lotes Contíguos) - ZEU": {
-        "sql": ("083", "112", "0021"),
-        "endereco": "Rua dos Pinheiros, Pinheiros - São Paulo/SP (Remembramento de 3 Lotes)",
-        "zona": "ZEU",
-        "macrozona": "Macrozona de Estruturação e Qualificação Urbana",
-        "macroarea": "Macroárea de Urbanização Consolidada (MUC)",
-        "qualificacao_ambiental": "PA 4 (Perímetro de Qualificação Ambiental 4 — Quota Ambiental)",
-        "cota_min": 742.0,
-        "cota_max": 745.5,
-        "features_utm": [
-            {
-                "type": "Feature",
-                "properties": {
-                    "cd_setor_fiscal": "083",
-                    "cd_quadra_fiscal": "112",
-                    "cd_lote": "0021",
-                    "cd_zona": "ZEU",
-                },
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [
-                        [
-                            [328110.0, 7392850.0],
-                            [328120.0, 7392850.0],
-                            [328120.0, 7392815.0],
-                            [328110.0, 7392815.0],
-                            [328110.0, 7392850.0],
-                        ]
-                    ],
-                },
-            },
-            {
-                "type": "Feature",
-                "properties": {
-                    "cd_setor_fiscal": "083",
-                    "cd_quadra_fiscal": "112",
-                    "cd_lote": "0022",
-                    "cd_zona": "ZEU",
-                },
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [
-                        [
-                            [328120.0, 7392850.0],
-                            [328130.0, 7392850.0],
-                            [328130.0, 7392815.0],
-                            [328120.0, 7392815.0],
-                            [328120.0, 7392850.0],
-                        ]
-                    ],
-                },
-            },
-            {
-                "type": "Feature",
-                "properties": {
-                    "cd_setor_fiscal": "083",
-                    "cd_quadra_fiscal": "112",
-                    "cd_lote": "0023",
-                    "cd_zona": "ZEU",
-                },
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [
-                        [
-                            [328130.0, 7392850.0],
-                            [328142.0, 7392850.0],
-                            [328142.0, 7392815.0],
-                            [328130.0, 7392815.0],
-                            [328130.0, 7392850.0],
-                        ]
-                    ],
-                },
-            },
-        ],
-    },
-    "Vila Mariana - Zona Mista (ZM)": {
-        "sql": ("037", "045", "0088"),
-        "endereco": "Rua Domingos de Morais, Vila Mariana - São Paulo/SP",
-        "zona": "ZM",
-        "macrozona": "Macrozona de Estruturação e Qualificação Urbana",
-        "macroarea": "Macroárea de Urbanização Consolidada (MUC)",
-        "qualificacao_ambiental": "PA 6 (Perímetro de Qualificação Ambiental 6 — Quota Ambiental)",
-        "cota_min": 788.0,
-        "cota_max": 792.0,
-        "features_utm": [
-            {
-                "type": "Feature",
-                "properties": {
-                    "cd_setor_fiscal": "037",
-                    "cd_quadra_fiscal": "045",
-                    "cd_lote": "0088",
-                    "cd_zona": "ZM",
-                },
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [
-                        [
-                            [332850.0, 7390420.0],
-                            [332872.0, 7390420.0],
-                            [332872.0, 7390380.0],
-                            [332850.0, 7390380.0],
-                            [332850.0, 7390420.0],
-                        ]
-                    ],
-                },
-            }
-        ],
-    },
-}
+# Exemplos e vizinhos de demonstração: lotes reais em domain/lotes_exemplo.py (reexportados aqui)
 
 
 def buscar_lote_local_por_ponto_utm(x_utm: float, y_utm: float) -> Optional[Dict[str, Any]]:
@@ -806,120 +696,6 @@ def buscar_lote_local_por_ponto_utm(x_utm: float, y_utm: float) -> Optional[Dict
         except Exception:
             continue
     return None
-
-
-LOTES_VIZINHOS_DEMO_UTM: List[Dict[str, Any]] = [
-    # Vizinhos contíguos na Av. Paulista (009.074.0016 e 009.074.0014)
-    {
-        "type": "Feature",
-        "properties": {
-            "cd_setor_fiscal": "009",
-            "cd_quadra_fiscal": "074",
-            "cd_lote": "0016",
-            "nm_logradouro": "AV PAULISTA",
-            "cd_zona": "ZEU",
-        },
-        "geometry": {
-            "type": "Polygon",
-            "coordinates": [
-                [
-                    [331008.0, 7393392.0],
-                    [331036.0, 7393374.0],
-                    [331006.0, 7393327.0],
-                    [330978.0, 7393345.0],
-                    [331008.0, 7393392.0],
-                ]
-            ],
-        },
-    },
-    {
-        "type": "Feature",
-        "properties": {
-            "cd_setor_fiscal": "009",
-            "cd_quadra_fiscal": "074",
-            "cd_lote": "0014",
-            "nm_logradouro": "AV PAULISTA",
-            "cd_zona": "ZEU",
-        },
-        "geometry": {
-            "type": "Polygon",
-            "coordinates": [
-                [
-                    [330952.0, 7393428.0],
-                    [330980.0, 7393410.0],
-                    [330950.0, 7393363.0],
-                    [330922.0, 7393381.0],
-                    [330952.0, 7393428.0],
-                ]
-            ],
-        },
-    },
-    # Vizinho adicional em Pinheiros (083.112.0024)
-    {
-        "type": "Feature",
-        "properties": {
-            "cd_setor_fiscal": "083",
-            "cd_quadra_fiscal": "112",
-            "cd_lote": "0024",
-            "cd_zona": "ZEU",
-        },
-        "geometry": {
-            "type": "Polygon",
-            "coordinates": [
-                [
-                    [328142.0, 7392850.0],
-                    [328154.0, 7392850.0],
-                    [328154.0, 7392815.0],
-                    [328142.0, 7392815.0],
-                    [328142.0, 7392850.0],
-                ]
-            ],
-        },
-    },
-    # Vizinhos contíguos na Vila Mariana (037.045.0089 e 037.045.0090)
-    {
-        "type": "Feature",
-        "properties": {
-            "cd_setor_fiscal": "037",
-            "cd_quadra_fiscal": "045",
-            "cd_lote": "0089",
-            "cd_zona": "ZM",
-        },
-        "geometry": {
-            "type": "Polygon",
-            "coordinates": [
-                [
-                    [332872.0, 7390420.0],
-                    [332894.0, 7390420.0],
-                    [332894.0, 7390380.0],
-                    [332872.0, 7390380.0],
-                    [332872.0, 7390420.0],
-                ]
-            ],
-        },
-    },
-    {
-        "type": "Feature",
-        "properties": {
-            "cd_setor_fiscal": "037",
-            "cd_quadra_fiscal": "045",
-            "cd_lote": "0090",
-            "cd_zona": "ZM",
-        },
-        "geometry": {
-            "type": "Polygon",
-            "coordinates": [
-                [
-                    [332894.0, 7390420.0],
-                    [332916.0, 7390420.0],
-                    [332916.0, 7390380.0],
-                    [332894.0, 7390380.0],
-                    [332894.0, 7390420.0],
-                ]
-            ],
-        },
-    },
-]
 
 
 def criar_feicao_referencia_coordenada(

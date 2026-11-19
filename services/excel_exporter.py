@@ -7,7 +7,7 @@ e barras de Gantt coloridas na aba `CRONOGRAMA`.
 import io
 import zipfile
 from html import escape
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # Cores de cada aba (formato ARGB Hex de 8 dígitos para OpenXML)
 TAB_COLORS: Dict[str, str] = {
@@ -42,6 +42,78 @@ STYLE_GANTT_OBRA = 14
 STYLE_GANTT_EMPTY = 15
 STYLE_CURVA_S = 16
 STYLE_KEY_LABEL = 17
+
+
+# ---------------------------------------------------------------------------
+# Cores por tipologia: cada categoria de unidade tem uma cor própria em todas as abas.
+# Detectada pelo texto do cabeçalho da coluna (ex.: "COMP. HIS-2", "N.COMP. HIS-1 (50%)") ou,
+# em tabelas com coluna "CATEGORIA", pelo valor da categoria na linha.
+# (nome, trecho procurado em caixa alta, cor forte do cabeçalho, cor clara dos dados)
+# A ordem importa: variantes ("HIS-2 (COTA") vêm antes da categoria base ("HIS-2").
+# ---------------------------------------------------------------------------
+CORES_TIPOLOGIA: List[Tuple[str, str, str, str]] = [
+    ("HIS-2 (Cota Solid.)", "HIS-2 (COTA", "FF0E7490", "FFCFFAFE"),     # ciano
+    ("HIS-1 (50%)", "HIS-1 (50%", "FF4D7C0F", "FFECFCCB"),              # verde-oliva
+    ("R2V-1 (10% incentivo)", "R2V-1 (10%", "FF4338CA", "FFE0E7FF"),    # índigo
+    ("NR1-12", "NR1-12", "FF7E22CE", "FFF3E8FF"),                       # roxo
+    ("NR1-3 (Fachada Ativa)", "NR1-3", "FFBE185D", "FFFCE7F3"),         # rosa
+    ("HIS-2", "HIS-2", "FF1D4ED8", "FFDBEAFE"),                         # azul
+    ("HIS-1", "HIS-1", "FF047857", "FFD1FAE5"),                         # esmeralda
+    ("R2V-1", "R2V-1", "FFC2410C", "FFFFEDD5"),                         # laranja
+]
+_BASE_FILLS = 13
+_BASE_XFS = 18
+# Para a família i: cabeçalho, inteiro, decimal, texto e total (5 estilos)
+_XFS_POR_FAMILIA = 5
+
+
+def familia_tipologia(texto: Any) -> Optional[int]:
+    """Índice em CORES_TIPOLOGIA da tipologia citada no texto (cabeçalho ou categoria), ou None."""
+    if not isinstance(texto, str):
+        return None
+    alvo = texto.upper().replace("\xa0", " ")
+    for i, (_, trecho, _, _) in enumerate(CORES_TIPOLOGIA):
+        if trecho in alvo:
+            return i
+    return None
+
+
+def estilo_tipologia(familia: int, papel: str) -> int:
+    """Índice do estilo (cellXfs) da tipologia para o papel: header, int, num, text ou total."""
+    deslocamento = {"header": 0, "int": 1, "num": 2, "text": 3, "total": 4}[papel]
+    return _BASE_XFS + familia * _XFS_POR_FAMILIA + deslocamento
+
+
+def _fills_tipologia_xml() -> str:
+    return "".join(
+        f'<fill><patternFill patternType="solid"><fgColor rgb="{forte}"/><bgColor indexed="64"/></patternFill></fill>'
+        f'<fill><patternFill patternType="solid"><fgColor rgb="{clara}"/><bgColor indexed="64"/></patternFill></fill>'
+        for _, _, forte, clara in CORES_TIPOLOGIA
+    )
+
+
+def _xfs_tipologia_xml() -> str:
+    partes = []
+    for i in range(len(CORES_TIPOLOGIA)):
+        fill_forte, fill_clara = _BASE_FILLS + 2 * i, _BASE_FILLS + 2 * i + 1
+        partes += [
+            # cabeçalho: branco negrito sobre a cor forte
+            f'<xf numFmtId="0" fontId="2" fillId="{fill_forte}" borderId="3" xfId="0" applyFont="1" applyFill="1" '
+            'applyBorder="1" applyAlignment="1"><alignment vertical="center" horizontal="center" wrapText="1"/></xf>',
+            # inteiro
+            f'<xf numFmtId="165" fontId="0" fillId="{fill_clara}" borderId="1" xfId="0" applyNumberFormat="1" '
+            'applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" horizontal="center"/></xf>',
+            # decimal
+            f'<xf numFmtId="164" fontId="0" fillId="{fill_clara}" borderId="1" xfId="0" applyNumberFormat="1" '
+            'applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" horizontal="right"/></xf>',
+            # texto
+            f'<xf numFmtId="0" fontId="0" fillId="{fill_clara}" borderId="1" xfId="0" applyFont="1" applyFill="1" '
+            'applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>',
+            # total: negrito sobre a cor clara com a borda de total
+            f'<xf numFmtId="164" fontId="3" fillId="{fill_clara}" borderId="2" xfId="0" applyNumberFormat="1" '
+            'applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" horizontal="right"/></xf>',
+        ]
+    return "".join(partes)
 
 
 def _col_letter(col_idx_1based: int) -> str:
@@ -86,7 +158,7 @@ def _styles_xml() -> str:
         '<font><b/><sz val="10"/><color rgb="FF1E3A8A"/><name val="Segoe UI"/></font>'
         '</fonts>'
         # Preenchimentos / Fills (0..12)
-        '<fills count="13">'
+        f'<fills count="{_BASE_FILLS + 2 * len(CORES_TIPOLOGIA)}">'
         '<fill><patternFill patternType="none"/></fill>'
         '<fill><patternFill patternType="gray125"/></fill>'
         # 2: Banner Azul Marinho (#1E3A8A)
@@ -111,7 +183,8 @@ def _styles_xml() -> str:
         '<fill><patternFill patternType="solid"><fgColor rgb="FFD1FAE5"/><bgColor indexed="64"/></patternFill></fill>'
         # 12: Chave / Label Azul Claro (#EFF6FF)
         '<fill><patternFill patternType="solid"><fgColor rgb="FFEFF6FF"/><bgColor indexed="64"/></patternFill></fill>'
-        '</fills>'
+        + _fills_tipologia_xml()
+        + '</fills>'
         # Bordas (0..3)
         '<borders count="4">'
         # 0: Sem borda
@@ -145,7 +218,7 @@ def _styles_xml() -> str:
         '<xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>'
         '</cellStyleXfs>'
         # 18 Estilos de Célula (cellXfs 0..17)
-        '<cellXfs count="18">'
+        f'<cellXfs count="{_BASE_XFS + _XFS_POR_FAMILIA * len(CORES_TIPOLOGIA)}">'
         # 0: STYLE_DEFAULT
         '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
         # 1: STYLE_TITLE_BANNER
@@ -216,7 +289,8 @@ def _styles_xml() -> str:
         '<xf numFmtId="0" fontId="7" fillId="12" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">'
         '<alignment vertical="center" horizontal="left"/>'
         '</xf>'
-        '</cellXfs>'
+        + _xfs_tipologia_xml()
+        + '</cellXfs>'
         '<cellStyles count="1">'
         '<cellStyle name="Normal" xfId="0" builtinId="0"/>'
         '</cellStyles>'
@@ -333,6 +407,24 @@ def _escolher_estilo_celula(
     return STYLE_TEXT_ODD if is_odd else STYLE_TEXT_EVEN
 
 
+def _aplicar_cor_tipologia(style_id: int, row_kind: str, val: Any, familia: Optional[int]) -> int:
+    """Troca o estilo pela versão colorida da tipologia (mantém status ATENDE/REVISAR e Gantt)."""
+    if familia is None or style_id in (STYLE_STATUS_OK, STYLE_STATUS_WARN, STYLE_GANTT_PRE, STYLE_GANTT_OBRA):
+        return style_id
+    if row_kind == "header":
+        return estilo_tipologia(familia, "header")
+    if row_kind == "total":
+        return estilo_tipologia(familia, "total") if isinstance(val, (int, float)) else style_id
+    if row_kind in ("data", "kv"):
+        if style_id in (STYLE_INT_EVEN, STYLE_INT_ODD):
+            return estilo_tipologia(familia, "int")
+        if style_id in (STYLE_NUM_EVEN, STYLE_NUM_ODD):
+            return estilo_tipologia(familia, "num")
+        if style_id in (STYLE_TEXT_EVEN, STYLE_TEXT_ODD):
+            return estilo_tipologia(familia, "text")
+    return style_id
+
+
 def _calcular_larguras_colunas(sheet_name: str, rows: Sequence[Sequence[Any]]) -> List[float]:
     """Calcula a largura ideal de cada coluna para evitar textos truncados ou `###`."""
     max_cols = max((len(r) for r in rows), default=1)
@@ -383,11 +475,29 @@ def _sheet_xml(sheet_name: str, rows: Sequence[Sequence[Any]]) -> str:
     ]
 
     merge_refs: List[str] = []
+    # Cores por tipologia: colunas da tabela atual (pelo cabeçalho) e coluna "CATEGORIA" (por linha)
+    familias_colunas: Dict[int, int] = {}
+    col_categoria: Optional[int] = None
 
     for r_idx, row in enumerate(rows, start=1):
         row_kind = _classificar_linha(row, r_idx)
         if row_kind == "empty":
             continue
+        if row_kind == "banner":
+            familias_colunas, col_categoria = {}, None
+        elif row_kind == "header":
+            familias_colunas = {
+                c: f for c, v in enumerate(row, start=1) if (f := familia_tipologia(v)) is not None
+            }
+            col_categoria = next(
+                (c for c, v in enumerate(row, start=1) if isinstance(v, str) and v.strip().upper() == "CATEGORIA"),
+                None,
+            )
+        familia_linha = (
+            familia_tipologia(row[col_categoria - 1])
+            if col_categoria and row_kind in ("data", "kv") and len(row) >= col_categoria
+            else None
+        )
 
         row_ht = "26" if row_kind == "banner" else ("24" if row_kind == "header" else ("21" if row_kind in ("total", "curva_s") else "19"))
         cells_xml: List[str] = []
@@ -411,6 +521,9 @@ def _sheet_xml(sheet_name: str, rows: Sequence[Sequence[Any]]) -> str:
                     continue
                 ref = f"{_col_letter(c_idx)}{r_idx}"
                 style_id = _escolher_estilo_celula(sheet_name, row_kind, r_idx, c_idx, val, row)
+                style_id = _aplicar_cor_tipologia(
+                    style_id, row_kind, val, familias_colunas.get(c_idx, familia_linha)
+                )
                 if isinstance(val, bool):
                     txt_bool = "SIM" if val else "NÃO"
                     cells_xml.append(f'<c r="{ref}" s="{style_id}" t="inlineStr"><is><t>{txt_bool}</t></is></c>')

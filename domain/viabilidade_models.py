@@ -51,6 +51,18 @@ COLUNAS_NAO_COMPUTAVEIS: List[Tuple[str, str]] = [
 ]
 
 TODAS_COLUNAS_AREA = [c for c, _ in COLUNAS_COMPUTAVEIS] + [c for c, _ in COLUNAS_NAO_COMPUTAVEIS]
+
+# Categoria de unidade → (coluna de quantidade de UH, coluna de área privativa, é computável?)
+# Usado pelas Etapas 5/6 para montar a matriz a partir das tipologias escolhidas por pavimento.
+CATEGORIAS_TIPOLOGIA: Dict[str, Tuple[str, str, bool]] = {
+    "HIS-2": ("u_his2", "c_his2", True),
+    "HIS-1": ("u_his1", "c_his1", True),
+    "R2V-1": ("u_r2v1", "c_r2v1", True),
+    "HIS-2 (Cota Solid.)": ("u_his2_cota", "nc_his2_cota", False),
+    "HIS-1 (50%)": ("u_his1_50", "nc_his1_50", False),
+    "R2V-1 (10% incentivo)": ("u_r2v1_10", "nc_r2v1_10", False),
+    "NR1-12": ("u_nr1_12", "nc_nr1_12", False),
+}
 TODAS_COLUNAS_UNIDADE = [c for c, _ in COLUNAS_UNIDADES]
 
 MODALIDADES = {
@@ -136,6 +148,31 @@ class Pavimento:
     unidades: Dict[str, float] = field(default_factory=dict)
     areas: Dict[str, float] = field(default_factory=dict)
     cota_m: float = 0.0                       # calculada
+
+
+@dataclass
+class TipologiaPavimento:
+    """Uma tipologia de unidade e quantas cabem por pavimento-tipo (Etapas 5/6)."""
+    categoria: str                            # chave de CATEGORIAS_TIPOLOGIA (ex.: "HIS-2")
+    nome: str                                 # ex.: "STUDIO", "1 DORM"
+    area_privativa_m2: float                  # área de cada unidade
+    unidades_por_pavimento: int               # UH desta tipologia em cada pavimento da faixa
+    pavimento_inicial: int = 1                # 1 = 1º pavimento-tipo
+    pavimento_final: Optional[int] = None     # None = até o último pavimento-tipo
+
+
+@dataclass
+class CapacidadePavimento:
+    """Quanto cabe em um pavimento-tipo e quanto as tipologias escolhidas ocupam."""
+    numero: int                               # 1 = 1º pavimento-tipo
+    nome: str
+    unidades: int
+    area_privativa_computavel_m2: float
+    area_privativa_nao_computavel_m2: float
+    area_construida_m2: float                 # privativas + circulação
+    limite_computavel_m2: Optional[float]     # cota do potencial (T46) por pavimento-tipo
+    limite_laje_m2: Optional[float]           # projeção máxima (T.O. × terreno)
+    atende: bool
 
 
 @dataclass

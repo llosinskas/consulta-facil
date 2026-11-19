@@ -7,7 +7,7 @@ e cruzamento espacial com Zoneamento, Topografia e Tombamento do GeoSampa.
 
 import math
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from pyproj import Transformer
 from shapely.geometry import MultiPolygon, Polygon, mapping, shape
 from shapely.ops import transform as shapely_transform, unary_union
@@ -20,11 +20,25 @@ from domain.models import (
     ResultadoTerreno,
     SegmentoAresta,
 )
+from domain.legislacao_sp import macrozona_da_macroarea
 from domain.zoning_rules import obter_parametros_zoneamento
 from services.geosampa_client import GeoSampaWFSClient
 
 _UTM_TO_WGS84 = Transformer.from_crs(CRS_UTM_SP, CRS_WGS84, always_xy=True)
 _WGS84_TO_UTM = Transformer.from_crs(CRS_WGS84, CRS_UTM_SP, always_xy=True)
+
+# Callback opcional de progresso: recebe (fração concluída 0–1, descrição da etapa).
+# Mantém este módulo sem dependência de interface; a UI decide como exibir.
+Progresso = Optional[Callable[[float, str], None]]
+
+
+def _avisar(progresso: Progresso, fracao: float, mensagem: str) -> None:
+    if progresso is None:
+        return
+    try:
+        progresso(max(0.0, min(1.0, fracao)), mensagem)
+    except Exception:  # falha na exibição do progresso nunca interrompe o cálculo
+        pass
 
 
 def _eh_coordenada_wgs84(geom: Any) -> bool:
@@ -214,6 +228,8 @@ def _consultar_temas_territoriais(
     x_utm: float,
     y_utm: float,
     valores_iniciais: Optional[Dict[str, Optional[str]]] = None,
+    progresso: Progresso = None,
+    faixa: Tuple[float, float] = (0.0, 1.0),
 ) -> Dict[str, InfoTerritorial]:
     """
     Executa a consulta espacial pelo ponto geográfico do lote (x_utm, y_utm em EPSG:31983)
@@ -225,7 +241,9 @@ def _consultar_temas_territoriais(
     iniciais = valores_iniciais or {}
 
     resultado: Dict[str, InfoTerritorial] = {}
-    for chave, (rotulo, radicais) in _TEMAS_TERRITORIAIS.items():
+    passo = (faixa[1] - faixa[0]) / max(1, len(_TEMAS_TERRITORIAIS))
+    for i_tema, (chave, (rotulo, radicais)) in enumerate(_TEMAS_TERRITORIAIS.items()):
+        _avisar(progresso, faixa[0] + passo * i_tema, f"Consultando {rotulo} no GeoSampa…")
         if client is None:
             val_ini = iniciais.get(chave)
             obs_ini = (
@@ -280,7 +298,19 @@ def _consultar_temas_territoriais(
             ponto_latlon=ponto_latlon,
             ponto_utm=ponto_utm,
         )
+    _completar_macrozona_pela_macroarea(resultado)
     return resultado
+
+
+def _completar_macrozona_pela_macroarea(territoriais: Dict[str, InfoTerritorial]) -> None:
+    """O GeoSampa não publica camada de macrozona; ela é deduzida da macroárea (PDE, arts. 10 e 16)."""
+    mz, ma = territoriais.get("macrozona"), territoriais.get("macroarea")
+    if mz is None or mz.encontrado or ma is None or not ma.encontrado:
+        return
+    deduzida = macrozona_da_macroarea(ma.valor)
+    if deduzida:
+        mz.valor = deduzida
+        mz.observacao = f"Deduzida da macroárea ({ma.valor}) conforme o PDE — sem camada própria no GeoSampa."
 
 
 def consultar_enquadramento_pelo_ponto_do_lote(
@@ -334,12 +364,15 @@ def processar_terreno_completo(
     cota_max_forcada: Optional[float] = None,
     valores_territoriais_iniciais: Optional[Dict[str, Optional[str]]] = None,
     fonte_dados: str = "GeoSampa WFS Oficial",
+    progresso: Progresso = None,
 ) -> ResultadoTerreno:
     """
     Processa uma lista de features de lotes (1 ou vários lotes para unificação),
     calcula todas as métricas geométricas e realiza o cruzamento espacial com
     Zoneamento, Topografia e Tombamento.
+    `progresso(fração, mensagem)` é chamado a cada etapa (opcional).
     """
+    _avisar(progresso, 0.02, "Calculando a geometria dos lotes…")
     lotes_individuais: List[LoteIndividual] = []
     geometrias_utm: List[Any] = []
     avisos: List[str] = []
@@ -437,6 +470,7 @@ def processar_terreno_completo(
 
     if client is not None:
         # 1. Zoneamento (caso ainda não tenha vindo nos atributos do lote)
+        _avisar(progresso, 0.12, "Consultando o zoneamento…")
         if not zonas_detectadas:
             feats_zon = client.consultar_camada_espacial_bbox(
                 "zoneamento", minx_utm, miny_utm, maxx_utm, maxy_utm
@@ -452,6 +486,7 @@ def processar_terreno_completo(
                     continue
 
         # 2. Topografia / Curvas de nível (com buffer de 10m para capturar curvas adjacentes ao lote)
+        _avisar(progresso, 0.22, "Lendo as curvas de nível (topografia)…")
         feats_curvas = client.consultar_camada_espacial_bbox(
             "curva_nivel", minx_utm - 10.0, miny_utm - 10.0, maxx_utm + 10.0, maxy_utm + 10.0
         )
@@ -461,6 +496,7 @@ def processar_terreno_completo(
                 cotas_encontradas.append(cota)
 
         # 3. Patrimônio / Tombamento
+        _avisar(progresso, 0.32, "Verificando tombamento e patrimônio…")
         feats_tomb = client.consultar_camada_espacial_bbox(
             "tombamento", minx_utm, miny_utm, maxx_utm, maxy_utm
         )
@@ -510,8 +546,10 @@ def processar_terreno_completo(
     ponto_utm = uniao_utm.representative_point()
     coord_utm_tupla = (round(ponto_utm.x, 2), round(ponto_utm.y, 2))
     territoriais = _consultar_temas_territoriais(
-        client, ponto_utm.x, ponto_utm.y, valores_iniciais=valores_territoriais_iniciais
+        client, ponto_utm.x, ponto_utm.y, valores_iniciais=valores_territoriais_iniciais,
+        progresso=progresso, faixa=(0.42, 0.95),
     )
+    _avisar(progresso, 1.0, "Análise do terreno concluída.")
 
     geojson_unificado = {
         "type": "Feature",
@@ -597,3 +635,37 @@ def alternar_lote_na_selecao(
     return feats_atuais + [nova], "adicionado"
 
 
+
+
+def encontrar_feicao_no_ponto(
+    features: List[Dict[str, Any]], lat: float, lon: float, tolerancia_m: float = 0.5
+) -> Optional[Dict[str, Any]]:
+    """
+    Devolve a feição (lote) que contém o ponto (lat, lon), aceitando geometrias em UTM ou WGS84.
+    Usado para resolver cliques no mapa sobre lotes já carregados (vizinhos ou selecionados)
+    sem nova consulta ao GeoSampa. Retorna None se nenhum lote contiver o ponto.
+    """
+    x_utm, y_utm = _WGS84_TO_UTM.transform(lon, lat)
+    ponto = shape({"type": "Point", "coordinates": (x_utm, y_utm)})
+    melhor, menor = None, tolerancia_m
+    for feat in features or []:
+        geom = feat.get("geometry")
+        if not geom:
+            continue
+        try:
+            g = _garantir_geometria_utm(shape(geom))
+        except Exception:
+            continue
+        if g.contains(ponto):
+            return feat
+        dist = g.distance(ponto)
+        if dist <= menor:
+            melhor, menor = feat, dist
+    return melhor
+
+
+def bbox_utm_com_margem(resultado: ResultadoTerreno, margem_m: float = 40.0) -> Tuple[float, float, float, float]:
+    """Bounding box (EPSG:31983) do terreno com margem, para buscar os lotes vizinhos."""
+    geoms = [_garantir_geometria_utm(shape(l.geojson_wgs84["geometry"])) for l in resultado.lotes]
+    minx, miny, maxx, maxy = unary_union(geoms).bounds
+    return minx - margem_m, miny - margem_m, maxx + margem_m, maxy + margem_m

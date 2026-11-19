@@ -12,7 +12,7 @@ Recursos gráficos:
 
 import math
 from html import escape
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import folium
 from branca.element import MacroElement, Template
@@ -107,7 +107,13 @@ def _adicionar_cotas(mapa_grupo: folium.FeatureGroup, resultado: ResultadoTerren
         # Linha de cota com marcas nas extremidades
         a = (x1 + nx * deslocamento, y1 + ny * deslocamento)
         b = (x2 + nx * deslocamento, y2 + ny * deslocamento)
-        folium.PolyLine([_latlon(*a), _latlon(*b)], color=COR_COTA, weight=1.2, opacity=0.9).add_to(mapa_grupo)
+        folium.PolyLine(
+            [_latlon(*a), _latlon(*b)], color=COR_COTA, weight=1.2, opacity=0.9,
+            tooltip=(
+                f"Lado L{aresta.indice}: {_fmt_m(aresta.comprimento_m)} — "
+                f"azimute {aresta.azimute_graus:.1f}° ({aresta.orientacao_cardeal})"
+            ),
+        ).add_to(mapa_grupo)
 
         tx, ty = dx / comp, dy / comp  # direção do lado
         marca = min(0.6, deslocamento * 0.3)
@@ -128,10 +134,7 @@ def _adicionar_cotas(mapa_grupo: folium.FeatureGroup, resultado: ResultadoTerren
         folium.Marker(
             location=_latlon(xm + nx * deslocamento, ym + ny * deslocamento),
             icon=_rotulo_rotacionado(f"L{aresta.indice} · {_fmt_m(aresta.comprimento_m)}", angulo),
-            tooltip=(
-                f"Lado L{aresta.indice}: {_fmt_m(aresta.comprimento_m)} — "
-                f"azimute {aresta.azimute_graus:.1f}° ({aresta.orientacao_cardeal})"
-            ),
+            interactive=False,  # etiqueta não pode "engolir" o clique no lote (Marker não propaga ao mapa)
         ).add_to(mapa_grupo)
 
 
@@ -152,6 +155,7 @@ def _adicionar_vertices(grupo: folium.FeatureGroup, resultado: ResultadoTerreno)
         folium.Marker(
             location=_latlon(x + (cx - x) / d * passo, y + (cy - y) / d * passo),
             icon=_rotulo_simples(f"V{aresta.indice}", "color:#374151; text-shadow:0 0 3px #fff,0 0 3px #fff;"),
+            interactive=False,
         ).add_to(grupo)
 
 
@@ -242,13 +246,81 @@ def _popup_terreno_html(resultado: ResultadoTerreno) -> str:
     )
 
 
+_AVISO_CARREGANDO_JS = Template("""
+{% macro script(this, kwargs) %}
+(function () {
+    var mapa = {{ this._parent.get_name() }};
+    if (!document.getElementById('cf-map-loading-css')) {
+        var css = document.createElement('style');
+        css.id = 'cf-map-loading-css';
+        css.innerHTML = '@keyframes cfAnda {0% {left:-40%} 100% {left:100%}}' +
+            '.cf-map-loading {position:absolute; inset:0; z-index:1000; display:none; align-items:center;' +
+            ' justify-content:center; background:rgba(255,255,255,.55); cursor:progress;}' +
+            '.cf-map-loading .cf-box {background:#fff; border-radius:10px; padding:12px 18px; min-width:240px;' +
+            ' box-shadow:0 6px 24px rgba(0,0,0,.2); font:600 13.5px -apple-system,Segoe UI,Roboto,Arial,sans-serif; color:#111827;}' +
+            '.cf-map-loading .cf-trilho {position:relative; height:6px; margin-top:9px; background:#e5e7eb;' +
+            ' border-radius:99px; overflow:hidden;}' +
+            '.cf-map-loading .cf-onda {position:absolute; top:0; height:100%; width:40%; border-radius:99px;' +
+            ' background:linear-gradient(90deg,#d97706,#f59e0b); animation:cfAnda 1.1s ease-in-out infinite;}';
+        document.head.appendChild(css);
+    }
+    var aviso = L.DomUtil.create('div', 'cf-map-loading', mapa.getContainer());
+    aviso.innerHTML = '<div class="cf-box">Carregando o lote clicado…' +
+        '<div class="cf-trilho"><div class="cf-onda"></div></div></div>';
+    L.DomEvent.disableClickPropagation(aviso);
+    L.DomEvent.disableScrollPropagation(aviso);
+    mapa.on('click', function () {
+        aviso.style.display = 'flex';
+        mapa.dragging.disable(); mapa.scrollWheelZoom.disable(); mapa.doubleClickZoom.disable();
+        // Segurança: se o app não redesenhar o mapa, libera após 30 s
+        setTimeout(function () {
+            aviso.style.display = 'none';
+            mapa.dragging.enable(); mapa.scrollWheelZoom.enable(); mapa.doubleClickZoom.enable();
+        }, 30000);
+    });
+})();
+{% endmacro %}
+""")
+
+
+def _aviso_carregando_ao_clicar() -> MacroElement:
+    """Mostra 'Carregando…' sobre o mapa no instante do clique, antes de o Streamlit reprocessar."""
+    elemento = MacroElement()
+    elemento._template = _AVISO_CARREGANDO_JS
+    return elemento
+
+
+def _geometria_utm(geom_dict: Dict[str, Any]):
+    """Aceita geometria em UTM (EPSG:31983) ou WGS84 e devolve sempre em UTM."""
+    g = shape(geom_dict)
+    x0, y0 = g.representative_point().coords[0]
+    if abs(x0) <= 180 and abs(y0) <= 90:
+        return shapely_transform(_TO_UTM.transform, g)
+    return g
+
+
+def _sql_props(props: Dict[str, Any]) -> str:
+    return (
+        f"{props.get('cd_setor_fiscal', '000')}."
+        f"{props.get('cd_quadra_fiscal', '000')}."
+        f"{props.get('cd_lote', '0000')}"
+    )
+
+
 def construir_mapa_terreno(
     resultado: Optional[ResultadoTerreno] = None,
     exibir_cotas_arestas: bool = True,
     exibir_wms_geosampa: bool = True,
     ponto_clicado_latlon: Optional[Tuple[float, float]] = None,
+    lotes_vizinhos: Optional[List[Dict[str, Any]]] = None,
+    aviso_carregando_ao_clicar: bool = False,
 ) -> folium.Map:
-    """Cria o mapa interativo centralizado no terreno analisado (ou no centro de SP)."""
+    """
+    Cria o mapa interativo centralizado no terreno analisado (ou no centro de SP).
+    `lotes_vizinhos`: feições reais ao redor (UTM ou WGS84) desenhadas como clicáveis; se None,
+    usa os vizinhos de demonstração gravados no projeto (modo offline / exemplos).
+    `aviso_carregando_ao_clicar`: exibe "Carregando…" sobre o mapa logo no clique.
+    """
     centro = resultado.centroide_latlon if resultado else DEFAULT_MAP_CENTER
     mapa = folium.Map(
         location=centro,
@@ -369,58 +441,62 @@ def construir_mapa_terreno(
                 f"color:{COR_LOTE}; background:rgba(255,255,255,.94); padding:2px 6px;"
                 "border-radius:4px; border:1px solid #93c5fd; box-shadow:0 1px 2px rgba(0,0,0,.1);",
             ),
-            tooltip=f"Lote Unitário #{idx_lote}: SQL {lote.sql_formatado} ({_fmt_m2(lote.area_cartografica_m2)})",
+            interactive=False,
         ).add_to(grupo_lotes)
     grupo_lotes.add_to(mapa)
 
-    # Lotes vizinhos de demonstração próximos (para facilitar clique multi-lote mesmo sem rede)
+    # Lotes vizinhos clicáveis: reais do GeoSampa (online) ou de demonstração (offline)
     sqls_atuais = {l.sql_formatado for l in resultado.lotes}
     cx_utm, cy_utm = _TO_UTM.transform(resultado.centroide_latlon[1], resultado.centroide_latlon[0])
     pt_centro_utm = Point(cx_utm, cy_utm)
-    candidatos_vizinhos = list(LOTES_VIZINHOS_DEMO_UTM)
-    for d_ex in LOTES_EXEMPLO_SP.values():
-        candidatos_vizinhos.extend(d_ex.get("features_utm", []))
+    if lotes_vizinhos is not None:
+        candidatos_vizinhos = list(lotes_vizinhos)
+    else:
+        candidatos_vizinhos = list(LOTES_VIZINHOS_DEMO_UTM)
+        for d_ex in LOTES_EXEMPLO_SP.values():
+            candidatos_vizinhos.extend(d_ex.get("features_utm", []))
 
-    grupo_vizinhos = folium.FeatureGroup(name="Lotes vizinhos (clique para adicionar)", show=True)
+    geoms_selecionadas = [_geometria_utm(l.geojson_wgs84["geometry"]) for l in resultado.lotes]
+    grupo_vizinhos = folium.FeatureGroup(name="Lotes vizinhos (clique para unificar)", show=True)
     adicionou_vizinho = False
     for feat_v in candidatos_vizinhos:
         props_v = feat_v.get("properties") or {}
-        sql_v = (
-            f"{props_v.get('cd_setor_fiscal', '000')}."
-            f"{props_v.get('cd_quadra_fiscal', '000')}."
-            f"{props_v.get('cd_lote', '0000')}"
-        )
-        if sql_v in sqls_atuais:
+        sql_v = _sql_props(props_v)
+        if not feat_v.get("geometry"):
             continue
-        geom_v_utm = shape(feat_v["geometry"])
-        if geom_v_utm.distance(pt_centro_utm) <= 120.0:
-            geom_v_wgs = shapely_transform(_TO_WGS.transform, geom_v_utm)
-            folium.GeoJson(
-                {"type": "Feature", "properties": props_v, "geometry": mapping(geom_v_wgs)},
-                style_function=lambda _: {
-                    "color": "#64748b",
-                    "weight": 1.6,
-                    "dashArray": "4 4",
-                    "fillColor": "#94a3b8",
-                    "fillOpacity": 0.14,
-                },
-                highlight_function=lambda _: {"color": COR_LOTE, "weight": 2.5, "fillOpacity": 0.28},
-                tooltip=(
-                    f"Lote vizinho SQL {sql_v} ({_fmt_m2(geom_v_utm.area)}) — "
-                    "Clique para selecionar/adicionar este lote ao estudo"
-                ),
-            ).add_to(grupo_vizinhos)
-            pt_v = geom_v_wgs.representative_point()
-            folium.Marker(
-                location=(pt_v.y, pt_v.x),
-                icon=_rotulo_simples(
-                    f"+ {sql_v}",
-                    "color:#475569; background:rgba(255,255,255,.88); padding:1px 5px;"
-                    "border-radius:4px; border:1px dashed #94a3b8;",
-                ),
-                tooltip=f"Clique para adicionar o lote {sql_v} à seleção",
-            ).add_to(grupo_vizinhos)
-            adicionou_vizinho = True
+        geom_v_utm = _geometria_utm(feat_v["geometry"])
+        if sql_v in sqls_atuais and not sql_v.endswith(".0000"):
+            continue
+        if any(geom_v_utm.representative_point().within(g) for g in geoms_selecionadas):
+            continue  # já faz parte do terreno
+        if geom_v_utm.distance(pt_centro_utm) > 150.0:
+            continue
+        geom_v_wgs = shapely_transform(_TO_WGS.transform, geom_v_utm)
+        endereco_v = " ".join(
+            str(props_v[k]) for k in ("nm_logradouro_completo", "cd_numero_porta") if props_v.get(k)
+        )
+        dica = (
+            f"<div style='font:12.5px {FONTE}; line-height:1.45;'>"
+            f"<b>SQL {escape(sql_v)}</b> · {_fmt_m2(geom_v_utm.area)}"
+            + (f"<br>{escape(endereco_v)}" if endereco_v else "")
+            + (f"<br>Uso: {escape(str(props_v['dc_tipo_uso_imovel']))}" if props_v.get("dc_tipo_uso_imovel") else "")
+            + "<br><span style='color:#2563eb;font-weight:600'>Clique para unificar ao estudo</span></div>"
+        )
+        folium.GeoJson(
+            {"type": "Feature", "properties": {}, "geometry": mapping(geom_v_wgs)},
+            style_function=lambda _: {
+                "color": "#64748b",
+                "weight": 1.4,
+                "dashArray": "4 4",
+                "fillColor": "#94a3b8",
+                "fillOpacity": 0.12,
+            },
+            highlight_function=lambda _: {
+                "color": COR_LOTE, "weight": 3, "dashArray": "", "fillColor": "#93c5fd", "fillOpacity": 0.40,
+            },
+            tooltip=folium.Tooltip(dica, sticky=True),
+        ).add_to(grupo_vizinhos)
+        adicionou_vizinho = True
 
     if adicionou_vizinho:
         grupo_vizinhos.add_to(mapa)
@@ -446,6 +522,8 @@ def construir_mapa_terreno(
         grupo_cotas.add_to(mapa)
 
     mapa.get_root().add_child(_legenda(resultado, exibir_cotas_arestas))
+    if aviso_carregando_ao_clicar:
+        mapa.add_child(_aviso_carregando_ao_clicar())
 
     # Enquadra o terreno com margem para as cotas e a legenda
     min_lon, min_lat, max_lon, max_lat = resultado.bbox_latlon
@@ -453,5 +531,5 @@ def construir_mapa_terreno(
     margem_lon = max((max_lon - min_lon) * 0.45, 0.00012)
     mapa.fit_bounds([[min_lat - margem_lat, min_lon - margem_lon], [max_lat + margem_lat, max_lon + margem_lon]])
 
-    folium.LayerControl(collapsed=False, position="topright").add_to(mapa)
+    folium.LayerControl(collapsed=True, position="topright").add_to(mapa)
     return mapa

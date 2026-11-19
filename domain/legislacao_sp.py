@@ -210,3 +210,28 @@ def identificar_macroarea_fp(texto: Optional[str]) -> Optional[str]:
         if chave.startswith("MEM - ") and _sem_acento(chave[6:]) in alvo:
             return chave
     return None
+
+
+MACROZONA_ESTRUTURACAO = "Macrozona de Estruturação e Qualificação Urbana"
+MACROZONA_PROTECAO = "Macrozona de Proteção e Recuperação Ambiental"
+
+
+def macrozona_da_macroarea(texto: Optional[str]) -> Optional[str]:
+    """
+    Macrozona a que pertence a macroárea (PDE, Lei 16.050/2014, arts. 10 e 16):
+    MEM, MUC, MQU e MRVU → Estruturação e Qualificação Urbana;
+    MRVURA, MCQUA, MCUPE e MPEN → Proteção e Recuperação Ambiental.
+    Devolve None quando o texto não identifica a macroárea.
+    """
+    if not texto:
+        return None
+    alvo = _sem_acento(texto)
+    for trecho in ("recuperacao ambiental", "controle e qualificacao urbana e ambiental",
+                   "contencao urbana", "preservacao de ecossistemas", "mrvura", "mcqua", "mcupe", "mpen"):
+        if trecho in alvo:
+            return MACROZONA_PROTECAO
+    for trecho in ("estruturacao metropolitana", "urbanizacao consolidada", "qualificacao da urbanizacao",
+                   "reducao da vulnerabilidade urbana", "mem", "muc", "mqu", "mrvu"):
+        if trecho in alvo:
+            return MACROZONA_ESTRUTURACAO
+    return None
