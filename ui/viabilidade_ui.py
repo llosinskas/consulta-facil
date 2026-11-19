@@ -54,6 +54,7 @@ from services.quadro_areas_engine import (
     calcular_capacidade_pavimentos,
     calcular_quadro_areas,
     calcular_quadro_luops,
+    circulacao_padrao,
     distribuir_areas_automaticas_por_terreno,
     gerar_pavimentos_padrao,
     limites_pavimento_tipo,
@@ -931,13 +932,17 @@ def renderizar_estudo_completo_planilha(resultado: ResultadoTerreno) -> None:
         "(vazio em “Até” = até o último). A matriz da Etapa 6 é refeita automaticamente."
     )
     c_cc, c_cn, c_rest = st.columns([1, 1, 1.2], vertical_alignment="bottom")
+    circ_comp_padrao, circ_nc_padrao = circulacao_padrao(indices.zona)
+    grupo_circ = "eixo" if circ_nc_padrao == 0 else "demais"
     pct_circ_comp = c_cc.number_input(
         "Circulação computável (% da área privativa)", min_value=0.0, max_value=80.0,
-        value=PCT_CIRC_COMPUTAVEL_PADRAO * 100, step=1.0, key="viab_pct_circ_comp",
+        value=round(circ_comp_padrao * 100, 1), step=1.0, key=f"viab_pct_circ_comp_{grupo_circ}",
     ) / 100.0
     pct_circ_nao_comp = c_cn.number_input(
         "Circulação não computável (% da área privativa)", min_value=0.0, max_value=80.0,
-        value=PCT_CIRC_NAO_COMPUTAVEL_PADRAO * 100, step=1.0, key="viab_pct_circ_nao_comp",
+        value=round(circ_nc_padrao * 100, 1), step=1.0, key=f"viab_pct_circ_nao_comp_{grupo_circ}",
+        help="LPUOS art. 62, V: fora das zonas de eixo, até 20% da área coberta do pavimento. "
+             "Nas zonas de eixo (ZEU, ZEUa, ZEUP, ZEUPa, ZEM, ZEMP) a circulação dos pavimentos é computável.",
     ) / 100.0
     if c_rest.button("Sugerir tipologias pelo potencial do terreno", width="stretch", key="btn_tipologias_padrao"):
         st.session_state.pop("viab_df_tipologias", None)

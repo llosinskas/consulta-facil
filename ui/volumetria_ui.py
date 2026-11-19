@@ -155,7 +155,9 @@ def renderizar_volumetria(resultado: ResultadoTerreno, quadro: QuadroAreas, indi
         "(Ctrl/⌘ + arrastar inclina) e passe o mouse sobre um pavimento para ver os dados.",
     )
     try:
-        vol = calcular_volumetria(resultado.geojson_unificado_wgs84, quadro, indices)
+        vol = calcular_volumetria(
+            resultado.geojson_unificado_wgs84, quadro, indices, frente_m=resultado.testada_principal_m
+        )
     except ValueError as exc:
         nota(f"Não foi possível montar o volume: {exc}", "warn")
         return

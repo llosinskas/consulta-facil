@@ -639,6 +639,31 @@ class GeoSampaWFSClient:
 
         return [], f"Nenhum lote vetorial encontrado nas coordenadas ({lat_v:.6f}, {lon_v:.6f})."
 
+    def consultar_feicoes_camada_bbox(
+        self, camada: str, minx: float, miny: float, maxx: float, maxy: float, max_feicoes: int = 50
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """
+        Feições de uma camada WFS específica que tocam a caixa (EPSG:31983), com geometria em UTM.
+        Retorna (feições, respondeu): `respondeu` é False se o servidor falhou ou não conhece a camada.
+        """
+        params = {
+            "service": "WFS",
+            "version": "1.0.0",
+            "request": "GetFeature",
+            "typeName": camada,
+            "outputFormat": "application/json",
+            "BBOX": f"{minx:.2f},{miny:.2f},{maxx:.2f},{maxy:.2f}",
+            "srsName": CRS_UTM_SP,
+            "maxFeatures": str(max_feicoes),
+        }
+        resp = self._request_wfs(params, timeout=12)
+        if resp is None or "ServiceException" in resp.text[:600]:
+            return [], False
+        try:
+            return resp.json().get("features", []), True
+        except ValueError:
+            return [], False
+
     def consultar_camada_espacial_bbox(
         self, tema: str, minx: float, miny: float, maxx: float, maxy: float
     ) -> List[Dict[str, Any]]:

@@ -235,3 +235,38 @@ def macrozona_da_macroarea(texto: Optional[str]) -> Optional[str]:
         if trecho in alvo:
             return MACROZONA_ESTRUTURACAO
     return None
+
+
+
+# ---------------------------------------------------------------------------
+# Áreas não computáveis e incentivos — conferidos em 19/11/2026 no texto consolidado
+# (legislacao.prefeitura.sp.gov.br). Os testes em tests/test_legislacao_oficial.py comparam estes
+# valores com tests/fixtures/legislacao_sp_oficial.json.
+# ---------------------------------------------------------------------------
+
+# COE (Lei 16.642/2017), art. 108
+TERRACO_NAO_COMPUTAVEL_FRACAO_TERRENO = 0.05   # I: terraço aberto, por pavimento, até 5% do terreno
+AREA_COMUM_NAO_COMPUTAVEL_M2_POR_UH = 3.0      # VII, b: área comum coberta em qualquer pavimento
+
+# LPUOS (Lei 16.402/2016, redação da Lei 18.081/2024), art. 62
+LIMITE_NAO_COMPUTAVEL = 0.59                   # § 2º: incisos I a VI ≤ 59% da área construída total
+COTA_GARAGEM_M2_POR_VAGA = 32.0                # I, a: cota de garagem máxima por vaga
+AREA_MINIMA_UH_PARA_VAGA_M2 = 30.0             # I, a, 1: 1 vaga por UH ≥ 30 m² computáveis
+AREA_PRIVATIVA_POR_VAGA_M2 = 60.0              # I, a, 2: ou 1 vaga a cada 60 m² privativos
+ZONAS_EIXO = frozenset({"ZEU", "ZEUa", "ZEUP", "ZEUPa", "ZEM", "ZEMP"})       # I e V
+ZONAS_FACHADA_ATIVA_50 = ZONAS_EIXO | {"ZC", "ZCa"}                           # VII, a e VIII
+FACHADA_ATIVA_FRACAO_LOTE = {True: 0.50, False: 0.20}  # VII: a) eixos/ZC/ZCa · b) demais zonas
+NR_MISTO_FRACAO_COMPUTAVEL = 0.20             # VIII: nR em uso misto com fachada ativa
+
+# LPUOS art. 66: recuos laterais e de fundo dispensados
+ALTURA_SEM_RECUO_LATERAL_M = 10.0             # I: até 10 m de altura (exceto ZDE-2, ZPI-1, ZPI-2)
+ZONAS_SEM_DISPENSA_ATE_10M = frozenset({"ZDE-2", "ZPI-1", "ZPI-2"})
+AREA_TERRENO_DISPENSA_RECUO_M2 = 250.0        # III: terreno com área ≤ 250 m²
+FRENTE_DISPENSA_RECUO_M = 10.0                # III: ou frente ≤ 10 m
+
+
+def recuo_lateral_dispensado(area_terreno_m2: float, frente_m: Optional[float]) -> bool:
+    """LPUOS art. 66, III: terreno de até 250 m² ou com frente de até 10 m dispensa recuo lateral e de fundo."""
+    return area_terreno_m2 <= AREA_TERRENO_DISPENSA_RECUO_M2 or (
+        frente_m is not None and 0 < frente_m <= FRENTE_DISPENSA_RECUO_M
+    )

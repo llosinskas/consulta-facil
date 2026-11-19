@@ -92,15 +92,33 @@ class TestVolumetria(unittest.TestCase):
         self.assertTrue(vol.pavimentos[1].limitado_pela_projecao)
         self.assertTrue(any("maior que a planta" in a for a in vol.alertas))
 
-    def test_terreno_pequeno_demais_para_o_recuo_usa_o_terreno(self) -> None:
-        estreito = {"type": "Polygon", "coordinates": [[[333000, 7390000], [333004, 7390000],
-                                                        [333004, 7390040], [333000, 7390040],
-                                                        [333000, 7390000]]]}
-        vol = calcular_volumetria({"geometry": estreito}, self.quadro, self.indices)
+    def test_terreno_de_ate_250m2_dispensa_recuo_lateral_art_66_III(self) -> None:
+        pequeno = {"type": "Polygon", "coordinates": [[[333000, 7390000], [333004, 7390000],
+                                                       [333004, 7390040], [333000, 7390040],
+                                                       [333000, 7390000]]]}  # 160 m²
+        vol = calcular_volumetria({"geometry": pequeno}, self.quadro, self.indices)
         self.assertEqual(vol.recuo_aplicado_m, 0.0)
-        self.assertTrue(any("não deixa área útil" in a for a in vol.alertas))
-        self.assertGreater(vol.pavimentos[0].area_m2, 100.0)  # térreo usa o terreno (sem recuo)
+        self.assertTrue(any("art. 66, III" in a for a in vol.alertas))
 
+    def test_frente_de_ate_10m_dispensa_recuo_mesmo_em_terreno_grande(self) -> None:
+        com_frente = calcular_volumetria(
+            self.terreno.geojson_unificado_wgs84, self.quadro, self.indices, frente_m=9.5
+        )
+        self.assertEqual(com_frente.recuo_aplicado_m, 0.0)
+        self.assertTrue(any("art. 66, III" in a for a in com_frente.alertas))
+        sem_frente = calcular_volumetria(
+            self.terreno.geojson_unificado_wgs84, self.quadro, self.indices, frente_m=25.0
+        )
+        self.assertEqual(sem_frente.recuo_aplicado_m, 3.0)
+
+    def test_zona_com_recuo_ate_10m_recua_tambem_o_embasamento(self) -> None:
+        from dataclasses import replace
+        indices_zpi = replace(self.indices, zona="ZPI-1", recuo_ate_10m="3", recuo_acima_10m="3")
+        vol = calcular_volumetria(self.terreno.geojson_unificado_wgs84, self.quadro, indices_zpi, frente_m=25.0)
+        terreno = _poligono_utm(vol.terreno_wgs84)
+        terreo = _poligono_utm(vol.pavimentos[0].poligono_wgs84)
+        recuado = terreno.buffer(-3.0, join_style=2)
+        self.assertTrue(recuado.buffer(0.05).contains(terreo))
 
 if __name__ == "__main__":
     unittest.main()

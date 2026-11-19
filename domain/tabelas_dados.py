@@ -575,7 +575,7 @@ QUADRO_3_RAW = {'ZEU': {'ca_minimo': '0.5',
            'ca_basico': '1',
            'ca_maximo': '1.5',
            'to_ate_500': '0.5',
-           'to_acima_500': '0.3',
+           'to_acima_500': '0.5',  # Lei 18.081/2024, Quadro 3 "Alteração I" (a planilha trazia 0,3)
            'gabarito_m': '28',
            'recuo_frente': '5',
            'recuo_ate_10m': '3',

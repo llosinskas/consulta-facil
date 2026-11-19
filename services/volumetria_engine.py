@@ -3,8 +3,10 @@ Motor da Etapa 16: volumetria aproximada do edifício (estudo de massa).
 
 A partir do terreno (GeoSampa), do Quadro de Áreas (Etapa 6) e dos índices legais, monta um bloco
 3D por pavimento:
-- embasamento (pavimentos até 10 m de altura): planta = terreno reduzido até a projeção máxima (T.O.);
-- torre (acima de 10 m): terreno recuado pelo recuo lateral/fundo da zona, também limitado pela T.O.;
+- embasamento (pavimentos até 10 m): terreno sem recuo lateral (LPUOS art. 66, I), salvo nas zonas em que
+  o Quadro 3 exige recuo até 10 m, reduzido até a projeção máxima (T.O.);
+- torre (acima de 10 m): terreno recuado pelo recuo lateral/fundo do Quadro 3, salvo dispensa do
+  art. 66, III (terreno ≤ 250 m² ou frente ≤ 10 m), também limitado pela T.O.;
 - cada pavimento usa essa planta escalada até a sua área construída (nunca maior que a planta máxima);
 - altura de cada bloco = pé-direito do pavimento.
 
@@ -27,9 +29,10 @@ from domain.viabilidade_models import (
     VolumePavimento,
 )
 from services.spatial_analyzer import geometria_para_utm, geometria_para_wgs84
+from domain.legislacao_sp import ALTURA_SEM_RECUO_LATERAL_M, recuo_lateral_dispensado
 from services.viabilidade_bridge import parse_numero_tabela
 
-ALTURA_RECUO_LATERAL_M = 10.0   # LPUOS: recuos laterais/fundo exigidos acima de 10 m de altura
+ALTURA_RECUO_LATERAL_M = ALTURA_SEM_RECUO_LATERAL_M  # LPUOS art. 66, I
 AREA_MINIMA_PLANTA_M2 = 1.0
 
 
@@ -70,8 +73,12 @@ def calcular_volumetria(
     geojson_terreno: Dict,
     quadro: QuadroAreas,
     indices: IndicesLegais,
+    frente_m: Optional[float] = None,
 ) -> ResultadoVolumetria:
-    """Volume aproximado do edifício, pavimento a pavimento, sobre o terreno."""
+    """
+    Volume aproximado do edifício, pavimento a pavimento, sobre o terreno.
+    `frente_m` (testada) permite aplicar a dispensa de recuo do art. 66, III (frente de até 10 m).
+    """
     alertas: List[str] = []
     geometria = geojson_terreno.get("geometry", geojson_terreno)
     terreno = _maior_poligono(geometria_para_utm(geometria))
@@ -86,24 +93,43 @@ def calcular_volumetria(
     def _limitar_a_projecao(planta: Polygon) -> Polygon:
         return _escalar_ate_area(planta, projecao) if projecao and planta.area > projecao else planta
 
-    # 1. Embasamento (pavimentos até 10 m): sem recuo lateral/fundo, limitado pela projeção (T.O.)
-    planta_embasamento = _limitar_a_projecao(terreno)
+    # LPUOS art. 66, III: terreno de até 250 m² ou com frente de até 10 m dispensa recuo lateral e de fundo
+    dispensa_art66 = recuo_lateral_dispensado(terreno.area, frente_m)
+
+    def _recuar(distancia: float, descricao: str) -> Optional[Polygon]:
+        recuada = _maior_poligono(terreno.buffer(-distancia, join_style=2))
+        if recuada is None or recuada.area < AREA_MINIMA_PLANTA_M2:
+            alertas.append(
+                f"O recuo lateral/fundo de {distancia:.2f} m {descricao} não deixa área útil neste terreno; "
+                "a volumetria usa o terreno sem esse recuo."
+            )
+            return None
+        return recuada
+
+    # 1. Embasamento (pavimentos até 10 m): sem recuo lateral/fundo (art. 66, I), exceto nas zonas
+    #    em que o Quadro 3 o exige até 10 m (ZDE-2, ZPI-1, ZPI-2, AC-1, AC-2); sempre limitado pela T.O.
+    recuo_base = float(parse_numero_tabela(indices.recuo_ate_10m)[0] or 0.0)
+    planta_embasamento = terreno
+    if recuo_base > 0 and not dispensa_art66:
+        planta_embasamento = _recuar(recuo_base, "até 10 m de altura") or terreno
+    planta_embasamento = _limitar_a_projecao(planta_embasamento)
 
     # 2. Torre (pavimentos acima de 10 m): recuo lateral/fundo do Quadro 3, também limitada pela T.O.
     recuo = 0.0
     planta_torre = planta_embasamento
     if altura_total > ALTURA_RECUO_LATERAL_M:
-        valor, _ = parse_numero_tabela(indices.recuo_acima_10m)
-        recuo = float(valor or 0.0)
-        if recuo > 0:
-            recuada = _maior_poligono(terreno.buffer(-recuo, join_style=2))
-            if recuada is None or recuada.area < AREA_MINIMA_PLANTA_M2:
-                alertas.append(
-                    f"O recuo lateral/fundo de {recuo:.2f} m não deixa área útil neste terreno acima de 10 m; "
-                    "a volumetria usa a planta do embasamento."
-                )
-                recuo = 0.0
-            else:
+        valor = float(parse_numero_tabela(indices.recuo_acima_10m)[0] or 0.0)
+        if valor > 0 and dispensa_art66:
+            area_txt = f"{terreno.area:,.0f}".replace(",", ".")
+            frente_txt = f"{frente_m:.1f}".replace(".", ",") if frente_m else "não informada"
+            alertas.append(
+                f"Recuos laterais e de fundo dispensados (LPUOS art. 66, III): terreno com {area_txt} m² "
+                f"e frente estimada de {frente_txt} m (dispensa até 250 m² ou frente de até 10 m)."
+            )
+        elif valor > 0:
+            recuada = _recuar(valor, "acima de 10 m")
+            if recuada is not None:
+                recuo = valor
                 planta_torre = _limitar_a_projecao(recuada)
     frente, _ = parse_numero_tabela(indices.recuo_frente)
     if frente and frente > recuo:

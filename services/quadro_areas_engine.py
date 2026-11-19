@@ -9,6 +9,7 @@ import copy
 import math
 from typing import Dict, List, Optional, Tuple
 
+from domain.legislacao_sp import TERRACO_NAO_COMPUTAVEL_FRACAO_TERRENO, ZONAS_EIXO
 from domain.viabilidade_models import (
     CATEGORIAS_TIPOLOGIA,
     COLUNAS_COMPUTAVEIS,
@@ -128,7 +129,7 @@ def distribuir_areas_automaticas_por_terreno(
     area_r2v1_pav = round(comp_por_pav * (1.0 - prop_his) * 0.88, 2)
     circ_comp_pav = round(comp_por_pav * 0.12, 2)
     circ_nc_pav = round(comp_por_pav * 0.18, 2)
-    terraco_nc_pav = round((indices.area_terreno_m2 * 0.05), 2)
+    terraco_nc_pav = round(indices.area_terreno_m2 * TERRACO_NAO_COMPUTAVEL_FRACAO_TERRENO, 2)  # COE art. 108, I
 
     uh_his2_pav = max(1, int(round(area_his2_pav / max(area_media_his2_m2, 15.0))))
     uh_r2v1_pav = max(0, int(round(area_r2v1_pav / max(area_media_r2v1_m2, 15.0))))
@@ -173,6 +174,16 @@ def distribuir_areas_automaticas_por_terreno(
 # preenchimento automático (0,12 / 0,88); 0,20 ≈ os 18% não computáveis (0,18 / 0,88).
 PCT_CIRC_COMPUTAVEL_PADRAO = 0.14
 PCT_CIRC_NAO_COMPUTAVEL_PADRAO = 0.20
+# LPUOS art. 62, V: fora das zonas de eixo, circulação comum não computável até 20% da área coberta do pavimento
+LIMITE_CIRCULACAO_NAO_COMPUTAVEL = 0.20
+
+
+def circulacao_padrao(zona: Optional[str]) -> Tuple[float, float]:
+    """(computável, não computável) como fração da área privativa. Nas zonas de eixo toda a circulação
+    dos pavimentos é computável (LPUOS art. 62, V)."""
+    if zona in ZONAS_EIXO:
+        return PCT_CIRC_COMPUTAVEL_PADRAO + PCT_CIRC_NAO_COMPUTAVEL_PADRAO, 0.0
+    return PCT_CIRC_COMPUTAVEL_PADRAO, PCT_CIRC_NAO_COMPUTAVEL_PADRAO
 
 _COLS_COMPUTAVEIS = [c for c, _ in COLUNAS_COMPUTAVEIS]
 _COLS_NAO_COMPUTAVEIS = [c for c, _ in COLUNAS_NAO_COMPUTAVEIS]
@@ -328,6 +339,37 @@ def calcular_capacidade_pavimentos(
     return resultado
 
 
+def _alertas_circulacao_nao_computavel(pavimentos: List[Pavimento], zona: Optional[str]) -> List[str]:
+    """
+    LPUOS art. 62, V: a circulação comum dos pavimentos residenciais é não computável até 20% da área
+    coberta do pavimento, EXCETO nas zonas de eixo. Nelas só ficam não computáveis as áreas comuns de
+    lazer até 3 m²/habitação (COE art. 108, VII, b; Decreto 57.776 art. 102, VII) e as do térreo.
+    """
+    alertas: List[str] = []
+    tipos = [p for p in pavimentos if p.tipo == "tipo"]
+    circ_nc = round(sum(float(p.areas.get("nc_circ", 0.0) or 0.0) for p in tipos), 2)
+    if zona in ZONAS_EIXO:
+        if circ_nc > 0.01:
+            area_txt = f"{circ_nc:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            alertas.append(
+                f"LPUOS art. 62, V: em {zona} (zona de eixo) a circulação comum dos pavimentos é computável. "
+                f"Os {area_txt} m² lançados em “N.Comp. Circulação” nos pavimentos-tipo devem passar para "
+                "“Comp. Circulação” (os 3 m²/habitação do COE art. 108, VII, b valem para áreas comuns de lazer)."
+            )
+        return alertas
+    excedidos = []
+    for p in tipos:
+        coberta = sum(float(v or 0.0) for v in p.areas.values())
+        if coberta > 0 and float(p.areas.get("nc_circ", 0.0) or 0.0) > LIMITE_CIRCULACAO_NAO_COMPUTAVEL * coberta + 0.01:
+            excedidos.append(p.nome)
+    if excedidos:
+        alertas.append(
+            "LPUOS art. 62, V: a circulação não computável passa de 20% da área coberta em: "
+            + ", ".join(excedidos) + ". O excedente é computável."
+        )
+    return alertas
+
+
 def calcular_quadro_areas(
     pavimentos: List[Pavimento],
     indices: IndicesLegais,
@@ -430,7 +472,7 @@ def calcular_quadro_areas(
 
     # Quadro Projeto — Balanço Área Máx. × Projeto × Sobra (T46:W54)
     w36 = indices.area_terreno_m2
-    w37 = round(w36 * 0.05, 2)  # Terraço / pav. = 5% da área do terreno
+    w37 = round(w36 * TERRACO_NAO_COMPUTAVEL_FRACAO_TERRENO, 2)  # Terraço / pav. = 5% do terreno (COE art. 108, I)
     w42 = len(pavimentos)
     u46 = round(
         sub_areas["c_his2"]
@@ -514,7 +556,7 @@ def calcular_quadro_areas(
             projeto=round(sub_areas["nc_terraco"] + sub_areas["c_terraco_r2v1"], 2),
             sobra=round(w37 * w42 - (sub_areas["nc_terraco"] + sub_areas["c_terraco_r2v1"]), 2),
             atende=(sub_areas["nc_terraco"] + sub_areas["c_terraco_r2v1"]) <= w37 * w42 + 0.01,
-            referencia="LPUOS, art. 62 (5% terreno/pav.)",
+            referencia="COE art. 108, I (5% terreno/pav.)",
             sentido="max",
         ),
         LinhaLimite(
@@ -555,6 +597,7 @@ def calcular_quadro_areas(
         alertas.append(
             f"Gabarito projetado ({altura_edif:.2f} m) ultrapassa o gabarito máximo da zona ({indices.gabarito_m:.2f} m)."
         )
+    alertas.extend(_alertas_circulacao_nao_computavel(pavimentos, indices.zona))
 
     return QuadroAreas(
         pavimentos=pavimentos,

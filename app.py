@@ -39,6 +39,7 @@ from ui.carregamento import reservar_area_carregamento, sub_progresso, tela_de_c
 from ui.map_component import construir_mapa_terreno
 from ui.styles import aplicar_estilos, nota, titulo_secao
 from ui.viabilidade_ui import renderizar_estudo_completo_planilha
+from ui.zoneamento_ui import renderizar_confirmacao_zona
 
 st.set_page_config(
     page_title="Estudo de Viabilidade · GeoSampa",
@@ -49,7 +50,7 @@ st.set_page_config(
 
 
 @st.cache_resource
-def obter_cliente_geosampa(versao: str = "v7_cache_camadas_progresso") -> GeoSampaWFSClient:
+def obter_cliente_geosampa(versao: str = "v8_confirmacao_zona") -> GeoSampaWFSClient:
     return GeoSampaWFSClient()
 
 
@@ -491,6 +492,7 @@ def main() -> None:
         return
 
     renderizar_resumo_terreno(resultado)
+    renderizar_confirmacao_zona(resultado)
 
     lat_p, lon_p = resultado.centroide_latlon
     e_utm, n_utm = getattr(resultado, "ponto_utm", (0.0, 0.0))

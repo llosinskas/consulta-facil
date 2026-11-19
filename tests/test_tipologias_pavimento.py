@@ -108,6 +108,32 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TestCirculacaoNaoComputavelLpuos62V(unittest.TestCase):
+    def test_eixo_circulacao_computavel_e_alerta(self):
+        from dataclasses import replace
+        from services.quadro_areas_engine import circulacao_padrao
+
+        self.assertEqual(circulacao_padrao("ZEU")[1], 0.0)
+        self.assertGreater(circulacao_padrao("ZM")[1], 0.0)
+        indices = _indices()
+        base = distribuir_areas_automaticas_por_terreno(indices, cota_terreno_m=790.0, qtd_pav_tipo=4)
+        tip = [TipologiaPavimento("HIS-2", "STUDIO", 25.0, 6)]
+        com_nc = aplicar_tipologias_aos_pavimentos(base, tip, 0.14, 0.20)
+        alerta_eixo = calcular_quadro_areas(com_nc, replace(indices, zona="ZEU")).alertas
+        self.assertTrue(any("art. 62, V" in a and "ZEU" in a and "120,00 m²" in a for a in alerta_eixo))
+        so_comp = aplicar_tipologias_aos_pavimentos(base, tip, *circulacao_padrao("ZEU"))
+        self.assertFalse(any("art. 62, V" in a for a in calcular_quadro_areas(so_comp, replace(indices, zona="ZEU")).alertas))
+
+    def test_fora_do_eixo_limita_a_20_por_cento_do_pavimento(self):
+        indices = _indices()  # ZM
+        base = distribuir_areas_automaticas_por_terreno(indices, cota_terreno_m=790.0, qtd_pav_tipo=4)
+        tip = [TipologiaPavimento("HIS-2", "STUDIO", 25.0, 6)]
+        ok = aplicar_tipologias_aos_pavimentos(base, tip, 0.14, 0.20)
+        self.assertFalse(any("art. 62, V" in a for a in calcular_quadro_areas(ok, indices).alertas))
+        demais = aplicar_tipologias_aos_pavimentos(base, tip, 0.14, 0.60)
+        self.assertTrue(any("passa de 20%" in a for a in calcular_quadro_areas(demais, indices).alertas))
+
+
 class TestCoresPorTipologiaNoExcel(unittest.TestCase):
     def test_colunas_e_linhas_de_cada_tipologia_tem_cor_propria(self) -> None:
         import re

@@ -22,7 +22,7 @@ from pyproj import Transformer
 from shapely.geometry import Point, mapping, shape
 from shapely.ops import transform as shapely_transform
 
-from config import CRS_UTM_SP, CRS_WGS84, DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, GEOSAMPA_WMS_URL
+from config import CRS_UTM_SP, CRS_WGS84, DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, GEOSAMPA_WMS_URL, MAPAS_ZONEAMENTO
 from domain.models import ResultadoTerreno
 from services.geosampa_client import LOTES_EXEMPLO_SP, LOTES_VIZINHOS_DEMO_UTM
 
@@ -357,8 +357,8 @@ def construir_mapa_terreno(
             overlay=True, show=True, opacity=0.55, max_zoom=22,
         ).add_to(mapa)
         folium.raster_layers.WmsTileLayer(
-            url=GEOSAMPA_WMS_URL, layers="geoportal:zoneamento_2016_map1",
-            name="GeoSampa · Zoneamento", fmt="image/png", transparent=True,
+            url=GEOSAMPA_WMS_URL, layers=MAPAS_ZONEAMENTO[0]["camada"],
+            name=f"GeoSampa · Zoneamento ({MAPAS_ZONEAMENTO[0]['lei']})", fmt="image/png", transparent=True,
             overlay=True, show=False, opacity=0.45, max_zoom=22,
         ).add_to(mapa)
         if resultado:

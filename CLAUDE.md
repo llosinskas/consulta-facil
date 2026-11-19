@@ -25,7 +25,7 @@ Aplicativo **Streamlit** de **estudo de viabilidade de terrenos em São Paulo**.
 7. **Exporta** tudo para `.xlsx` (gerador OpenXML próprio, sem openpyxl).
 
 Executar: `streamlit run app.py` (Windows: `executar_sistema.bat`, que usa `.venv`).
-Testes: `python -m pytest -q` (75 testes, todos passando; dependências em `requirements.txt`).
+Testes: `python -m pytest -q` (97 testes, todos passando; dependências em `requirements.txt`).
 
 ## 2. Arquitetura em camadas (REGRA PRINCIPAL)
 
@@ -46,9 +46,9 @@ Isso é verificado por `tests/test_arquitetura.py` — rode-o após qualquer mud
 ### domain/ (dados puros)
 | Arquivo | Conteúdo |
 |---|---|
-| `models.py` | `ResultadoTerreno` (objeto central da parte geoespacial), `LoteIndividual`, `SegmentoAresta`, `DadosTopografia`, `InfoTerritorial`, `ParametrosZoneamento` |
+| `models.py` | `ResultadoTerreno` (objeto central da parte geoespacial; `confirmacao_zona`), `LoteIndividual`, `SegmentoAresta`, `DadosTopografia`, `InfoTerritorial`, `ParametrosZoneamento`, `ConfirmacaoZona`, `LeituraMapaZoneamento`, `ParticipacaoZona` |
 | `viabilidade_models.py` | Dataclasses que espelham a planilha (comentários indicam a célula): `EntradaGeo`, `IndicesLegais`, `Pavimento`, `QuadroAreas`, `LinhaLimite`, `LinhaQuadro`, `ResultadoAnexos`, `ResultadoAgua`, `ResultadoElevador`, `ResultadoDesnivel`, `ResultadoFinanceiroCronograma`, `ResultadoPreviaEletrica`, `TipologiaPavimento`, `CapacidadePavimento`, `VolumePavimento`, `ResultadoVolumetria`… e as constantes `COLUNAS_UNIDADES`, `COLUNAS_COMPUTAVEIS`, `COLUNAS_NAO_COMPUTAVEIS`, `MODALIDADES`, `CATEGORIAS_TIPOLOGIA` (categoria → coluna de UH, coluna de área, computável?) |
-| `legislacao_sp.py` | **Fonte legal "oficial" conferida**: Quadro 3/3A LPUOS (Lei 16.402 + 18.081/24) em `QUADRO_3: Dict[str, ParametrosZonaLei]`, taxa de permeabilidade, PA, fatores Fs, Fp (Quadro 6), `macrozona_da_macroarea` (PDE arts. 10 e 16) |
+| `legislacao_sp.py` | **Fonte legal "oficial" conferida**: Quadro 3/3A LPUOS (Lei 16.402 + 18.081/24) em `QUADRO_3: Dict[str, ParametrosZonaLei]`, taxa de permeabilidade, PA, fatores Fs, Fp (Quadro 6), `macrozona_da_macroarea` (PDE arts. 10 e 16); constantes do **COE art. 108** e da **LPUOS arts. 62 e 66** (`TERRACO_NAO_COMPUTAVEL_FRACAO_TERRENO`, `AREA_COMUM_NAO_COMPUTAVEL_M2_POR_UH`, `LIMITE_NAO_COMPUTAVEL`, `ZONAS_EIXO`, `recuo_lateral_dispensado`…). **Travado por `tests/test_legislacao_oficial.py`** |
 | `zoning_rules.py` | Converte `legislacao_sp.QUADRO_3` em `ParametrosZoneamento` (`obter_parametros_zoneamento`) para painel/mapa |
 | `lotes_exemplo.py` | **Gerado** a partir do GeoSampa: `LOTES_EXEMPLO_SP` (lotes **reais**; o 1º é o terreno inicial do app) e `LOTES_VIZINHOS_DEMO_UTM` (vizinhos reais, clicáveis offline). Reexportados por `geosampa_client` |
 | `tabelas_dados.py` | **Gerado automaticamente** da aba DADOS da planilha (`QUADRO_2_RAW`, `QUADRO_3_RAW`, `QUADRO_4_RAW`, notas, listas). Valores em texto bruto (`'NA'`, `'28 (c)'`). Não editar à mão sem conferir a planilha |
@@ -59,13 +59,14 @@ Isso é verificado por `tests/test_arquitetura.py` — rode-o após qualquer mud
 | `geosampa_client.py` | 1 | `GeoSampaWFSClient` (WFS/WMS, auto-descoberta de camadas/schema, busca por SQL e por ponto); validadores `validar_sql_input`, `extrair_multiplos_sqls`, `validar_coordenadas_sp`; dados demo `LOTES_EXEMPLO_SP`, `LOTES_VIZINHOS_DEMO_UTM` |
 | `geocoder.py` | 1 | `geocodificar_endereco_sp(texto) → (latlon, endereco_fmt, erro)` |
 | `spatial_analyzer.py` | 1 | `processar_terreno_completo(features, client, ..., progresso=None) → ResultadoTerreno`; `alternar_lote_na_selecao`; `consultar_enquadramento_pelo_ponto_do_lote`; `encontrar_feicao_no_ponto(feats, lat, lon)` (clique sem rede); `bbox_utm_com_margem`; `geometria_para_utm` / `geometria_para_wgs84` |
+| `zoneamento_verificador.py` | 1 | `confirmar_zona(client, poligono_utm) → ConfirmacaoZona`: cruza o **polígono** do lote com os mapas de `config.MAPAS_ZONEAMENTO` (Lei 18.081/2024 vigente, Lei 18.177/2024 contestada, 2016 histórico), % da área por zona, status (`confirmada` / `lote em mais de uma zona` / `não confirmada`) e avisos. `analisar_mapas` é pura (testável sem rede) |
 | `viabilidade_bridge.py` | 2–4 | `extrair_entrada_geo(ResultadoTerreno, area_doacao, zona_override, pa_override) → EntradaGeo`; `calcular_indices_legais(EntradaGeo, modalidade, ca_customizado) → IndicesLegais` |
-| `quadro_areas_engine.py` | 6–8 | `gerar_pavimentos_padrao`, `distribuir_areas_automaticas_por_terreno(IndicesLegais, ...) → List[Pavimento]`; `calcular_quadro_areas(pavs, indices, ...) → QuadroAreas`; tipologias da Etapa 5: `tipologias_padrao`, `validar_tipologias`, `aplicar_tipologias_aos_pavimentos(pavs, tipologias, pct_circ…) → List[Pavimento]`, `limites_pavimento_tipo`, `maximo_unidades_por_pavimento`, `calcular_capacidade_pavimentos(pavs, indices) → List[CapacidadePavimento]`; `calcular_quadro_luops(indices, quadro, ...) → List[LinhaQuadro]`; `calcular_anexos(indices, quadro, ...) → ResultadoAnexos` |
+| `quadro_areas_engine.py` | 6–8 | `gerar_pavimentos_padrao`, `distribuir_areas_automaticas_por_terreno(IndicesLegais, ...) → List[Pavimento]`; `calcular_quadro_areas(pavs, indices, ...) → QuadroAreas`; tipologias da Etapa 5: `tipologias_padrao`, `validar_tipologias`, `aplicar_tipologias_aos_pavimentos(pavs, tipologias, pct_circ…) → List[Pavimento]`, `limites_pavimento_tipo`, `maximo_unidades_por_pavimento`, `calcular_capacidade_pavimentos(pavs, indices) → List[CapacidadePavimento]`; `circulacao_padrao(zona)` (LPUOS art. 62, V); alertas de circulação não computável em `calcular_quadro_areas`; `calcular_quadro_luops(indices, quadro, ...) → List[LinhaQuadro]`; `calcular_anexos(indices, quadro, ...) → ResultadoAnexos` |
 | `agua_elevador_engine.py` | 9–10 | `calcular_agua_e_populacao(List[PavimentoPopulacao], ...) → ResultadoAgua`; `calcular_trafego_elevadores(populacao, ...) → ResultadoElevador` |
 | `desnivel_engine.py` | 11 | `calcular_desnivel_reservatorios(cotas, trechos, ...) → ResultadoDesnivel` |
 | `financeiro_cronograma_engine.py` | 13 | `calcular_retorno_financeiro_e_cronograma(EntradaGeo, IndicesLegais, QuadroAreas, preços/custos...) → ResultadoFinanceiroCronograma` |
 | `eletrica_engine.py` | 14 | `calcular_previa_eletrica(QuadroAreas, ...) → ResultadoPreviaEletrica` |
-| `volumetria_engine.py` | 16 | `calcular_volumetria(geojson_terreno, QuadroAreas, IndicesLegais) → ResultadoVolumetria`: um bloco 3D por pavimento (área = área construída do pavimento no quadro); embasamento até 10 m sem recuo lateral, torre acima de 10 m com o recuo do Quadro 3; tudo limitado pela projeção (T.O.). Frente do lote não identificada (só avisa o recuo de frente) |
+| `volumetria_engine.py` | 16 | `calcular_volumetria(geojson_terreno, QuadroAreas, IndicesLegais, frente_m=None) → ResultadoVolumetria`: um bloco 3D por pavimento (área = área construída do pavimento no quadro); embasamento até 10 m sem recuo lateral (art. 66, I; exceto zonas com recuo até 10 m no Quadro 3), torre acima de 10 m com o recuo do Quadro 3, dispensado em terreno ≤ 250 m² ou frente ≤ 10 m (art. 66, III); tudo limitado pela projeção (T.O.). Frente do lote não identificada (só avisa o recuo de frente) |
 | `aproveitamento.py` | — | `calcular_aproveitamento(EntradaAproveitamento) → ResultadoAproveitamento` (memória de cálculo com base legal; usa `legislacao_sp`) |
 | `payback.py` | — | `calcular_payback(EntradaPayback) → ResultadoPayback`; `sensibilidade_payback` |
 | `excel_exporter.py` | 12 | `gerar_xlsx_bytes(List[(nome_aba, linhas)]) → bytes`. Cores por tipologia automáticas: colunas cujo **cabeçalho** cita uma tipologia (`familia_tipologia`) e linhas de tabelas com coluna **"CATEGORIA"** recebem a cor de `CORES_TIPOLOGIA` |
@@ -80,6 +81,7 @@ Isso é verificado por `tests/test_arquitetura.py` — rode-o após qualquer mud
 | `ui/aproveitamento_ui.py` | Formulário/resultado de `calcular_aproveitamento`; grava `session_state["aproveitamento_atual"]` |
 | `ui/payback_ui.py` | Premissas, indicadores e gráficos Altair do payback |
 | `ui/map_component.py` | `construir_mapa_terreno(..., lotes_vizinhos=None, aviso_carregando_ao_clicar=False)` (Folium: cotas, vértices, legenda, WMS, vizinhos clicáveis, aviso "Carregando…" no clique) |
+| `ui/zoneamento_ui.py` | `renderizar_confirmacao_zona(resultado)` (logo após o resumo): zona, status, % do lote, avisos e tabela dos três mapas |
 | `ui/carregamento.py` | `reservar_area_carregamento()` (1ª linha do `main`) e `with tela_de_carregamento(titulo) as progresso:` — camada que bloqueia a página com barra de progresso; `sub_progresso` mapeia subetapas |
 | `ui/volumetria_ui.py` | Etapa 16 (fim do estudo): `renderizar_volumetria(resultado, quadro, indices)` — mapa 3D com `pydeck` (já vem com o Streamlit), cores das tipologias iguais às do Excel, gabarito da zona como envelope |
 | `ui/styles.py` | CSS global e componentes HTML: `titulo_secao`, `grade_cards`, `tabela`, `nota(texto, tipo)`, `cabecalho_terreno` |
@@ -132,7 +134,9 @@ novos caches por terreno.
      `zoning_rules`, `ResultadoTerreno.zoneamento`, `aproveitamento.py`.
    - `domain/tabelas_dados.py` (cópia da aba DADOS da planilha) → usada por `viabilidade_bridge`
      e `viabilidade_ui`, para bater com a planilha célula a célula.
-   Os números podem divergir. Não unifique nem "corrija" uma pela outra sem pedido explícito.
+   Ambas foram conferidas contra o texto oficial em 19/11/2026 (a planilha tinha ZPI-2 T.O. ≥ 500 m² = 0,3;
+   corrigido para 0,5, "Alteração I" da Lei 18.081/2024). O C.A. EHIS/EHMP (Quadro 2 do Decreto 63.728/2024)
+   **não** foi conferido. Não unifique as duas fontes sem pedido explícito.
 2. **Funções homônimas com contratos diferentes:**
    - `legislacao_sp.normalizar_zona` × `viabilidade_bridge.normalizar_zona` (chaves de tabelas diferentes).
    - `legislacao_sp.extrair_pa(texto) → Optional[str]` × `viabilidade_bridge.extrair_pa(texto, macroarea) → str`
@@ -147,8 +151,8 @@ novos caches por terreno.
    `LAYER_KEYWORDS`) e há modo demo (`LOTES_EXEMPLO_SP`). Testes não devem depender da rede
    (para simular offline, faça mock de `client._request_wfs` **e** de `client.session.get`, usado pelo WMS).
    Camadas no GeoSampa (conferido em 19/11/2026): o **GetCapabilities não lista tudo** —
-   `zoneamento_2016_map3` (PA) só responde via **WMS** GetFeatureInfo; não há camada de macrozona
-   (é deduzida da macroárea). O cliente guarda a camada que respondeu (`_camada_preferida`) e as recusadas
+   `zoneamento_2016_map3` (PA) só responde via **WMS** GetFeatureInfo; macrozona vem de
+   `pde2014_v_mcrz_01_map` (com dedução pela macroárea como plano B). O cliente guarda a camada que respondeu (`_camada_preferida`) e as recusadas
    por serviço (`_inexistentes_wfs` / `_inexistentes_wms`); não descarte nomes só por faltarem no catálogo.
    Camadas `*_aiu` são excluídas (não são PA). Primeira consulta ≈ 6 s, seguintes ≈ 1–2 s.
 11. **Progresso**: serviços longos aceitam `progresso: Callable[[float, str], None]` (fração 0–1, mensagem)
@@ -156,6 +160,19 @@ novos caches por terreno.
     ao GeoSampa disparada pela UI deve rodar dentro de `tela_de_carregamento`.
 12. **Cliques no mapa**: `folium.Marker` não repassa o clique ao mapa (Leaflet `bubblingMouseEvents=false`).
     Etiquetas (cotas, vértices, SQL) usam `interactive=False`; senão o clique "some" sobre elas.
+14. **Zoneamento vigente (Mapa 1)**: use o mapa da **Lei 18.081/2024** (`geoportal:perimetro_zona_lei_18081_24`).
+    O TJSP (ADI 2257600-87.2025.8.26.0000, 26/08/2026) declarou inconstitucional o art. 8º da Lei 18.177/2024
+    (que trocou o mapa) e restabeleceu o da 18.081, com modulação de efeitos e pendência no STF. O mapa da
+    18.177 e o de 2016 só servem para avisos (`config.MAPAS_ZONEAMENTO`). Se a situação jurídica mudar,
+    altere `MAPAS_ZONEAMENTO` (papel `vigente`) e os textos em `zoneamento_verificador.py`. Nunca decida a
+    zona por um ponto: use `confirmar_zona` (polígono inteiro).
+15. **Coeficientes legais**: `tests/fixtures/legislacao_sp_oficial.json` é a transcrição do texto oficial
+    (Quadros 3 e 3A da LPUOS com a Lei 18.081/2024, LPUOS arts. 62 e 66, COE art. 108). Se um teste de
+    `test_legislacao_oficial.py` falhar, **corrija o código, não o fixture**; o fixture só muda quando a lei
+    mudar (atualize `_fonte` com URL e data). Fonte: legislacao.prefeitura.sp.gov.br.
+16. **Circulação (LPUOS art. 62, V)**: nas zonas de eixo a circulação dos pavimentos é computável; fora delas,
+    não computável até 20% da área coberta do pavimento. Os 3 m²/habitação do COE são para **lazer**
+    (Decreto 57.776 art. 102, VII). `circulacao_padrao(zona)` e os alertas do quadro aplicam isso.
 13. **Exemplos**: são lotes reais; para trocar/adicionar, gere `domain/lotes_exemplo.py` de novo a partir do
     GeoSampa (mesma estrutura) e atualize os nomes usados nos testes (`EX_*`).
 8. **Nunca use `importlib.reload` no `app.py`/páginas.** O Streamlit já descarrega e reimporta os

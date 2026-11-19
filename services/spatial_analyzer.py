@@ -20,9 +20,10 @@ from domain.models import (
     ResultadoTerreno,
     SegmentoAresta,
 )
-from domain.legislacao_sp import macrozona_da_macroarea
+from domain.legislacao_sp import macrozona_da_macroarea, normalizar_zona
 from domain.zoning_rules import obter_parametros_zoneamento
 from services.geosampa_client import GeoSampaWFSClient
+from services.zoneamento_verificador import confirmar_zona
 
 _UTM_TO_WGS84 = Transformer.from_crs(CRS_UTM_SP, CRS_WGS84, always_xy=True)
 _WGS84_TO_UTM = Transformer.from_crs(CRS_WGS84, CRS_UTM_SP, always_xy=True)
@@ -146,6 +147,7 @@ def _estimar_dimensoes_retangulo_minimo(poligono_utm: Any) -> Tuple[float, float
 def _extrair_sigla_zona_de_propriedades(props: Dict[str, Any]) -> Optional[str]:
     """Inspeciona um dicionário de propriedades WFS para encontrar a coluna que contém a sigla da Zona."""
     chaves_prioritarias = [
+        "cd_zoneamento_perimetro",  # Mapa 1 do GeoSampa (tx_ traz o nome por extenso)
         "cd_zona",
         "sg_zona",
         "tx_zona",
@@ -339,7 +341,20 @@ def consultar_enquadramento_pelo_ponto_do_lote(
     resultado.macroarea = territoriais["macroarea"]
     resultado.qualificacao_ambiental = territoriais["qualificacao_ambiental"]
 
-    # Também verifica o zoneamento no mesmo ponto geográfico
+    # Confirma a zona pelo polígono do lote no mapa vigente (Lei 18.081/2024)
+    try:
+        poligono = _garantir_geometria_utm(shape(resultado.geojson_unificado_wgs84["geometry"]))
+        confirmacao = confirmar_zona(client, poligono)
+        resultado.confirmacao_zona = confirmacao
+        if confirmacao.zona:
+            outras = [z for z in resultado.zonas_detectadas if z != confirmacao.zona]
+            resultado.zonas_detectadas = [confirmacao.zona] + outras
+            resultado.zoneamento = obter_parametros_zoneamento(confirmacao.zona)
+            return resultado
+    except Exception:
+        pass
+
+    # Plano B (mapa vigente indisponível): zona no ponto do lote, pela camada de zoneamento
     try:
         feats_zon, _ = client.consultar_camada_no_ponto("zoneamento", x_utm, y_utm)
         for fz in feats_zon:
@@ -465,26 +480,43 @@ def processar_terreno_completo(
     detalhes_tombamento: List[str] = []
     cotas_encontradas: List[float] = []
 
-    if zona_forcada and zona_forcada not in zonas_detectadas:
+    confirmacao = None
+    if client is not None:
+        # 1. Zoneamento: confirmado pela interseção do polígono com o Mapa 1 vigente (Lei 18.081/2024)
+        _avisar(progresso, 0.08, "Confirmando a zona no mapa vigente da LPUOS…")
+        try:
+            confirmacao = confirmar_zona(client, uniao_utm)
+        except Exception as exc:  # falha de rede não derruba a análise
+            avisos.append(f"Não foi possível confirmar a zona no GeoSampa: {exc}")
+        if confirmacao and confirmacao.zona:
+            if zona_forcada and normalizar_zona(zona_forcada) != confirmacao.zona:
+                avisos.append(
+                    f"A zona informada ({zona_forcada}) difere da zona do mapa vigente ({confirmacao.zona}); "
+                    f"o estudo usa {confirmacao.zona}."
+                )
+            vigente = next((l for l in confirmacao.leituras if l.lei == confirmacao.lei_referencia), None)
+            outras = [z.sigla for z in (vigente.zonas if vigente else []) if z.sigla and z.sigla != confirmacao.zona]
+            zonas_detectadas = [confirmacao.zona] + list(dict.fromkeys(outras))
+        else:
+            if zona_forcada and zona_forcada not in zonas_detectadas:
+                zonas_detectadas.insert(0, zona_forcada)
+            if not zonas_detectadas:
+                feats_zon = client.consultar_camada_espacial_bbox(
+                    "zoneamento", minx_utm, miny_utm, maxx_utm, maxy_utm
+                )
+                for fz in feats_zon:
+                    try:
+                        g_zon = _garantir_geometria_utm(shape(fz["geometry"]))
+                        if g_zon.intersects(uniao_utm.representative_point()) or g_zon.intersects(uniao_utm):
+                            sigla = _extrair_sigla_zona_de_propriedades(fz.get("properties") or {})
+                            if sigla and sigla not in zonas_detectadas:
+                                zonas_detectadas.append(sigla)
+                    except Exception:
+                        continue
+    elif zona_forcada and zona_forcada not in zonas_detectadas:
         zonas_detectadas.insert(0, zona_forcada)
 
     if client is not None:
-        # 1. Zoneamento (caso ainda não tenha vindo nos atributos do lote)
-        _avisar(progresso, 0.12, "Consultando o zoneamento…")
-        if not zonas_detectadas:
-            feats_zon = client.consultar_camada_espacial_bbox(
-                "zoneamento", minx_utm, miny_utm, maxx_utm, maxy_utm
-            )
-            for fz in feats_zon:
-                try:
-                    g_zon = _garantir_geometria_utm(shape(fz["geometry"]))
-                    if g_zon.intersects(uniao_utm.representative_point()) or g_zon.intersects(uniao_utm):
-                        sigla = _extrair_sigla_zona_de_propriedades(fz.get("properties") or {})
-                        if sigla and sigla not in zonas_detectadas:
-                            zonas_detectadas.append(sigla)
-                except Exception:
-                    continue
-
         # 2. Topografia / Curvas de nível (com buffer de 10m para capturar curvas adjacentes ao lote)
         _avisar(progresso, 0.22, "Lendo as curvas de nível (topografia)…")
         feats_curvas = client.consultar_camada_espacial_bbox(
@@ -587,6 +619,7 @@ def processar_terreno_completo(
         endereco_aproximado=endereco_referencia,
         fonte_dados=fonte_dados,
         avisos=avisos,
+        confirmacao_zona=confirmacao,
     )
 
 

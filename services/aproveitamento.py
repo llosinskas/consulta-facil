@@ -11,7 +11,19 @@ from dataclasses import dataclass, field, replace
 from typing import List, Optional
 
 from domain.legislacao_sp import (
+    AREA_COMUM_NAO_COMPUTAVEL_M2_POR_UH,
+    AREA_MINIMA_UH_PARA_VAGA_M2,
+    AREA_PRIVATIVA_POR_VAGA_M2,
+    COTA_GARAGEM_M2_POR_VAGA,
+    FACHADA_ATIVA_FRACAO_LOTE,
     FP_ZEM_ZEMP,
+    LIMITE_NAO_COMPUTAVEL,
+    NR_MISTO_FRACAO_COMPUTAVEL,
+    TERRACO_NAO_COMPUTAVEL_FRACAO_TERRENO,
+    ZONAS_FACHADA_ATIVA_50,
+)
+from domain.legislacao_sp import ZONAS_EIXO as LEI_ZONAS_EIXO
+from domain.legislacao_sp import (
     PA_SEM_QUOTA_AMBIENTAL,
     QUADRO_3,
     QUADRO_3A,
@@ -25,9 +37,8 @@ ORDINARIO = "ORDINARIO"
 EHIS = "EHIS"
 EHMP = "EHMP"
 
-ZONAS_EIXO = {"ZEU", "ZEUa", "ZEUP", "ZEUPa", "ZEM", "ZEMP"}
-ZONAS_FACHADA_50 = ZONAS_EIXO | {"ZC", "ZCa"}
-LIMITE_NAO_COMPUTAVEL = 0.59          # LPUOS art. 62, § 2º
+ZONAS_EIXO = LEI_ZONAS_EIXO
+ZONAS_FACHADA_50 = ZONAS_FACHADA_ATIVA_50
 LIMIAR_COTA_SOLIDARIEDADE_M2 = 20000.0  # PDE art. 112
 
 
@@ -315,23 +326,23 @@ def calcular_aproveitamento(ent: EntradaAproveitamento) -> ResultadoAproveitamen
     # 6. Limites de áreas não computáveis e incentivos
     area_total_max = comp_usada / (1 - LIMITE_NAO_COMPUTAVEL)
     nao_comp_max = area_total_max - comp_usada
-    pct_fachada = 0.5 if ent.zona in ZONAS_FACHADA_50 else 0.2
+    pct_fachada = FACHADA_ATIVA_FRACAO_LOTE[ent.zona in ZONAS_FACHADA_50]
     fachada_max = pct_fachada * remanescente
     linha("Não computável", "Área construída total máxima", area_total_max, "m²", "Computável ÷ (1 − 0,59)",
           "LPUOS art. 62, § 2º (sem contar incisos VII a XVI)")
     linha("Não computável", "Não computável máxima (incisos I a VI)", nao_comp_max, "m²", "0,59 × área total", "LPUOS art. 62, § 2º")
     linha("Não computável", "Fachada ativa não computável", fachada_max, "m²", f"{pct_fachada:.0%} × remanescente", "LPUOS art. 62, VII e § 4º, I")
-    linha("Não computável", "Terraço não computável por pavimento", 0.05 * remanescente, "m²", "5% × terreno", "COE art. 108, I; Decreto 57.776 art. 102, I")
+    linha("Não computável", "Terraço não computável por pavimento", TERRACO_NAO_COMPUTAVEL_FRACAO_TERRENO * remanescente, "m²", "5% × terreno remanescente", "COE art. 108, I; Decreto 57.776 art. 102, I")
     if ent.uso_residencial:
-        linha("Não computável", "Área comum em qualquer pavimento", 3.0 * unidades_est, "m²", "3 m² × unidades", "COE art. 108, VII, b")
+        linha("Não computável", "Área comum em qualquer pavimento", AREA_COMUM_NAO_COMPUTAVEL_M2_POR_UH * unidades_est, "m²", "3 m² × unidades (destinadas a lazer)", "COE art. 108, VII, b; Decreto 57.776 art. 102, VII")
     if ent.zona in ZONAS_FACHADA_50:
-        linha("Não computável", "Uso nR incentivado (misto com fachada ativa)", 0.2 * comp_usada, "m²", "20% × computável", "LPUOS art. 62, VIII")
+        linha("Não computável", "Uso nR incentivado (misto com fachada ativa)", NR_MISTO_FRACAO_COMPUTAVEL * comp_usada, "m²", "20% × computável", "LPUOS art. 62, VIII")
     if ent.zona in ZONAS_EIXO and ent.uso_residencial:
-        vagas_alt1 = unidades_est if area_media >= 30 else 0
-        vagas_alt2 = int((unidades_est * area_media) // 60)
+        vagas_alt1 = unidades_est if area_media >= AREA_MINIMA_UH_PARA_VAGA_M2 else 0
+        vagas_alt2 = int((unidades_est * area_media) // AREA_PRIVATIVA_POR_VAGA_M2)
         vagas = max(vagas_alt1, vagas_alt2)
         linha("Não computável", "Vagas não computáveis (teto)", vagas, "vagas", "1 por unid. ≥ 30 m², ou 1 a cada 60 m² privativos", "LPUOS art. 62, I, a")
-        linha("Não computável", "Garagem não computável (teto)", 32.0 * vagas, "m²", "Vagas × 32 m²", "LPUOS art. 62, I, a")
+        linha("Não computável", "Garagem não computável (teto)", COTA_GARAGEM_M2_POR_VAGA * vagas, "m²", "Vagas × 32 m²", "LPUOS art. 62, I, a")
 
     # 7. Cota de solidariedade
     if comp_usada > LIMIAR_COTA_SOLIDARIEDADE_M2 or ent.cota_solidariedade:

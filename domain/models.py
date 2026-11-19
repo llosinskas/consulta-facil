@@ -89,6 +89,46 @@ class LoteIndividual:
 
 
 @dataclass
+class ParticipacaoZona:
+    """Quanto do lote cai em uma zona de um mapa de zoneamento."""
+    sigla: Optional[str]          # sigla oficial do Quadro 3 (None = não é zona: viário, praça, canteiro…)
+    texto_original: str           # valor do GeoSampa (ex.: "ZEU", "PRAÇA/CANTEIRO")
+    area_m2: float
+    percentual: float             # 0–100 da área do lote
+
+
+@dataclass
+class LeituraMapaZoneamento:
+    """Resultado de um Mapa 1 (lei) do GeoSampa sobre o lote."""
+    lei: str
+    camada: str
+    papel: str                    # "vigente" | "contestado" | "historico"
+    situacao: str
+    respondeu: bool
+    zonas: List[ParticipacaoZona] = field(default_factory=list)
+
+    @property
+    def zona_predominante(self) -> Optional[str]:
+        validas = [z for z in self.zonas if z.sigla]
+        return max(validas, key=lambda z: z.area_m2).sigla if validas else None
+
+
+@dataclass
+class ConfirmacaoZona:
+    """Zona do lote confirmada pela interseção do polígono com o Mapa 1 vigente da LPUOS."""
+    zona: Optional[str]
+    status: str                   # "confirmada" | "lote em mais de uma zona" | "não confirmada"
+    percentual_zona: float        # % do lote na zona indicada
+    lei_referencia: str
+    leituras: List[LeituraMapaZoneamento] = field(default_factory=list)
+    alertas: List[str] = field(default_factory=list)
+
+    @property
+    def confirmada(self) -> bool:
+        return self.status == "confirmada"
+
+
+@dataclass
 class ResultadoTerreno:
     """
     Resultado consolidado da análise do terreno (pode ser 1 lote ou a unificação de vários lotes).
@@ -117,6 +157,7 @@ class ResultadoTerreno:
     endereco_aproximado: Optional[str] = None
     fonte_dados: str = "GeoSampa WFS Oficial"
     avisos: List[str] = field(default_factory=list)
+    confirmacao_zona: Optional[ConfirmacaoZona] = None
 
     @property
     def potencial_construtivo_basico_m2(self) -> float:
