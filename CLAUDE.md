@@ -25,7 +25,7 @@ Aplicativo **Streamlit** de **estudo de viabilidade de terrenos em São Paulo**.
 7. **Exporta** tudo para `.xlsx` (gerador OpenXML próprio, sem openpyxl).
 
 Executar: `streamlit run app.py` (Windows: `executar_sistema.bat`, que usa `.venv`).
-Testes: `python -m pytest -q` (97 testes, todos passando; dependências em `requirements.txt`).
+Testes: `python -m pytest -q` (99 testes, todos passando; dependências em `requirements.txt`).
 
 ## 2. Arquitetura em camadas (REGRA PRINCIPAL)
 
@@ -46,7 +46,7 @@ Isso é verificado por `tests/test_arquitetura.py` — rode-o após qualquer mud
 ### domain/ (dados puros)
 | Arquivo | Conteúdo |
 |---|---|
-| `models.py` | `ResultadoTerreno` (objeto central da parte geoespacial; `confirmacao_zona`), `LoteIndividual`, `SegmentoAresta`, `DadosTopografia`, `InfoTerritorial`, `ParametrosZoneamento`, `ConfirmacaoZona`, `LeituraMapaZoneamento`, `ParticipacaoZona` |
+| `models.py` | `ResultadoTerreno` (objeto central da parte geoespacial; `confirmacao_zona`), `completar_campos_novos` (migra objetos de sessões antigas), `LoteIndividual`, `SegmentoAresta`, `DadosTopografia`, `InfoTerritorial`, `ParametrosZoneamento`, `ConfirmacaoZona`, `LeituraMapaZoneamento`, `ParticipacaoZona` |
 | `viabilidade_models.py` | Dataclasses que espelham a planilha (comentários indicam a célula): `EntradaGeo`, `IndicesLegais`, `Pavimento`, `QuadroAreas`, `LinhaLimite`, `LinhaQuadro`, `ResultadoAnexos`, `ResultadoAgua`, `ResultadoElevador`, `ResultadoDesnivel`, `ResultadoFinanceiroCronograma`, `ResultadoPreviaEletrica`, `TipologiaPavimento`, `CapacidadePavimento`, `VolumePavimento`, `ResultadoVolumetria`… e as constantes `COLUNAS_UNIDADES`, `COLUNAS_COMPUTAVEIS`, `COLUNAS_NAO_COMPUTAVEIS`, `MODALIDADES`, `CATEGORIAS_TIPOLOGIA` (categoria → coluna de UH, coluna de área, computável?) |
 | `legislacao_sp.py` | **Fonte legal "oficial" conferida**: Quadro 3/3A LPUOS (Lei 16.402 + 18.081/24) em `QUADRO_3: Dict[str, ParametrosZonaLei]`, taxa de permeabilidade, PA, fatores Fs, Fp (Quadro 6), `macrozona_da_macroarea` (PDE arts. 10 e 16); constantes do **COE art. 108** e da **LPUOS arts. 62 e 66** (`TERRACO_NAO_COMPUTAVEL_FRACAO_TERRENO`, `AREA_COMUM_NAO_COMPUTAVEL_M2_POR_UH`, `LIMITE_NAO_COMPUTAVEL`, `ZONAS_EIXO`, `recuo_lateral_dispensado`…). **Travado por `tests/test_legislacao_oficial.py`** |
 | `zoning_rules.py` | Converte `legislacao_sp.QUADRO_3` em `ParametrosZoneamento` (`obter_parametros_zoneamento`) para painel/mapa |
@@ -180,6 +180,10 @@ novos caches por terreno.
    da execução de outras sessões e quebrava o deploy no Streamlit Cloud (KeyError/ImportError/
    AttributeError). Estado por sessão nunca em variável global de módulo (use `st.session_state`
    ou `threading.local`, como em `ui/carregamento.py`).
+   **Objetos na sessão sobrevivem ao deploy**: um `ResultadoTerreno` criado pela versão anterior não tem os
+   campos novos (foi assim que `confirmacao_zona` derrubou o app no Cloud). `inicializar_estado()` chama
+   `domain.models.completar_campos_novos` no terreno atual e no histórico; ao criar campo novo em dataclass
+   guardado na sessão, dê default (receita da seção 6) e, ao ler campo recente na UI, prefira `getattr(obj, "campo", None)`.
 9. **Cache do cliente**: `obter_cliente_geosampa(versao=...)` usa `st.cache_resource`; mude a string
    `versao` se alterar o `__init__` do `GeoSampaWFSClient`.
 10. Funções de cálculo **retornam dataclasses** e acumulam avisos em `alertas`/`avisos`/`notas`

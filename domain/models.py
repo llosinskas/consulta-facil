@@ -2,7 +2,7 @@
 Modelos de domínio para Lotes, Terrenos, Dimensões Geométricas e Estudo de Viabilidade.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from domain.legislacao_sp import extrair_pa, taxa_permeabilidade
@@ -185,3 +185,32 @@ class ResultadoTerreno:
         taxa = taxa_permeabilidade(self.zoneamento.sigla_zona, pa, self.area_total_m2)
         return round(self.area_total_m2 * (taxa or 0.0), 2)
 
+
+
+def completar_campos_novos(objeto: Any) -> Any:
+    """
+    Objetos guardados em st.session_state sobrevivem a um deploy (Streamlit Cloud atualiza o código sem
+    reiniciar a sessão) e podem ter sido criados por uma versão antiga da classe, sem os campos novos.
+    Preenche, no próprio objeto e nos dataclasses aninhados, os campos ausentes com o valor padrão.
+    """
+    if not is_dataclass(objeto) or isinstance(objeto, type):
+        return objeto
+    # Depois de um deploy o objeto é instância da classe ANTIGA (módulo recarregado): os campos novos
+    # só existem na classe atual, buscada pelo nome entre as classes deste módulo.
+    classe_atual = globals().get(type(objeto).__name__)
+    if not (isinstance(classe_atual, type) and is_dataclass(classe_atual)):
+        classe_atual = type(objeto)
+    for campo in fields(classe_atual):
+        if not hasattr(objeto, campo.name):
+            if campo.default is not MISSING:
+                setattr(objeto, campo.name, campo.default)
+            elif campo.default_factory is not MISSING:  # type: ignore[misc]
+                setattr(objeto, campo.name, campo.default_factory())  # type: ignore[misc]
+            continue
+        valor = getattr(objeto, campo.name)
+        if is_dataclass(valor):
+            completar_campos_novos(valor)
+        elif isinstance(valor, list):
+            for item in valor:
+                completar_campos_novos(item)
+    return objeto

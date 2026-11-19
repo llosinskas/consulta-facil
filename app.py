@@ -35,6 +35,7 @@ from ui.dashboard_cards import (
     renderizar_tabela_unitario_vs_unificado,
     renderizar_tabelas_geometricas,
 )
+from domain.models import completar_campos_novos
 from ui.carregamento import reservar_area_carregamento, sub_progresso, tela_de_carregamento
 from ui.map_component import construir_mapa_terreno
 from ui.styles import aplicar_estilos, nota, titulo_secao
@@ -119,6 +120,10 @@ def carregar_exemplo(nome: str, empilhar: bool = True) -> None:
 def inicializar_estado() -> None:
     if "resultado_terreno" not in st.session_state:
         carregar_exemplo(next(iter(LOTES_EXEMPLO_SP)), empilhar=False)
+    # Sessões abertas antes de um deploy guardam objetos da versão anterior: completa os campos novos
+    completar_campos_novos(st.session_state.get("resultado_terreno"))
+    for anterior, _ in st.session_state.get("historico_selecoes") or []:
+        completar_campos_novos(anterior)
     st.session_state.setdefault("ultimo_erro", None)
     st.session_state.setdefault("aviso_selecao_mapa", None)
     st.session_state.setdefault("ultimo_clique_processado", None)

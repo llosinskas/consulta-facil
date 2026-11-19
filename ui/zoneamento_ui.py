@@ -21,7 +21,7 @@ def renderizar_confirmacao_zona(resultado: ResultadoTerreno) -> None:
         "A zona é conferida cruzando o polígono do lote com o mapa de zoneamento vigente do GeoSampa "
         "(Lei 18.081/2024) e comparada com os mapas da Lei 18.177/2024 e de 2016.",
     )
-    conf = resultado.confirmacao_zona
+    conf = getattr(resultado, "confirmacao_zona", None)  # sessões anteriores ao campo não o têm
     if conf is None:
         zona = resultado.zoneamento.sigla_zona if resultado.zoneamento else "—"
         nota(
